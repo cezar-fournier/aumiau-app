@@ -36,6 +36,10 @@ REQUIRE_EMAIL_VERIFICATION = os.getenv("REQUIRE_EMAIL_VERIFICATION", "true").low
 MERCADOPAGO_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "").strip()
 MERCADOPAGO_WEBHOOK_SECRET = os.getenv("MERCADOPAGO_WEBHOOK_SECRET", "").strip()
 MERCADOPAGO_ENVIRONMENT = os.getenv("MERCADOPAGO_ENVIRONMENT", "test").strip().lower()
+MERCADOPAGO_TEST_PAYER_EMAIL = os.getenv(
+    "MERCADOPAGO_TEST_PAYER_EMAIL",
+    "test_user_br@testuser.com",
+).strip().lower()
 MERCADOPAGO_API_BASE = os.getenv("MERCADOPAGO_API_BASE", "https://api.mercadopago.com").rstrip("/")
 MERCADOPAGO_NOTIFICATION_URL = os.getenv(
     "MERCADOPAGO_NOTIFICATION_URL",
@@ -1239,6 +1243,9 @@ def create_billing_order(
     if account is None:
         raise HTTPException(status_code=404, detail="Conta não encontrada.")
 
+    payer_email = account[0]
+    if MERCADOPAGO_ENVIRONMENT == "test" and not payer_email.endswith("@testuser.com"):
+        payer_email = MERCADOPAGO_TEST_PAYER_EMAIL
     external_reference = f"aumiau-{user['sub']}-{request.productId}-{secrets.token_hex(6)}"
     amount = str(product["amountBrl"])
     response = mercadopago_request(
@@ -1258,7 +1265,7 @@ def create_billing_order(
                     }
                 ]
             },
-            "payer": {"email": account[0]},
+            "payer": {"email": payer_email},
         },
         idempotency_key=str(uuid.uuid4()),
     )
