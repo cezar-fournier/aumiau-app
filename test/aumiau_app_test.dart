@@ -184,6 +184,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Continuar sem conta'), findsOneWidget);
+    await tester.ensureVisible(find.text('Continuar sem conta'));
     await tester.tap(find.text('Continuar sem conta'));
     await tester.pumpAndSettle();
 
