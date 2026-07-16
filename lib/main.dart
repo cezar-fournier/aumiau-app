@@ -2201,7 +2201,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
               const SizedBox(height: 10),
               Text(
                 isTestEnvironment
-                    ? 'Ambiente de teste: use “Abrir pagamento” para simular a cobrança. Bancos reais não processam este QR.'
+                    ? 'Ambiente de teste: use o bot\u00e3o Abrir pagamento para simular a cobran\u00e7a. Bancos reais n\u00e3o processam este QR.'
                     : 'Escaneie o QR Code usando o aplicativo do seu banco.',
                 textAlign: TextAlign.center,
               ),
@@ -2251,7 +2251,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
               const SizedBox(height: 10),
               Text(
                 isTestEnvironment
-                    ? 'Este pagamento está no sandbox do Mercado Pago e não libera uma cobrança real.'
+                    ? 'Este pagamento est\u00e1 no sandbox do Mercado Pago e n\u00e3o libera uma cobran\u00e7a real.'
                     : 'Após o pagamento, o Mercado Pago notificará o servidor. O Family será liberado depois da confirmação do pagamento.',
                 style: const TextStyle(
                   fontSize: 12,
