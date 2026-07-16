@@ -179,7 +179,9 @@ void main() {
     await tester.pumpWidget(
       AumiauApp(database: database, enableUpdateChecks: false),
     );
-    await tester.pumpAndSettle();
+    // A marca da autenticação possui animações contínuas; aguarde um quadro
+    // estável de renderização em vez de esperar que a tela fique settled.
+    await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Continuar sem conta'), findsOneWidget);
     await tester.tap(find.text('Continuar sem conta'));

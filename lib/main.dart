@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -2220,7 +2221,7 @@ class _AuthWelcomeView extends StatelessWidget {
     return _AuthCard(
       children: [
         const SizedBox(height: 18),
-        const _AuthBrand(showTagline: true),
+        const _AnimatedAuthBrand(showTagline: true),
         const SizedBox(height: 30),
         const Text(
           'Cuide de quem ama',
@@ -2316,7 +2317,7 @@ class _AuthLoginViewState extends State<_AuthLoginView> {
     return _AuthCard(
       children: [
         _AuthBackButton(onPressed: widget.onBack),
-        const _AuthBrand(),
+        const _AnimatedAuthBrand(),
         const SizedBox(height: 24),
         const Text(
           'Bem-vindo(a)! 👋',
@@ -2479,7 +2480,7 @@ class _AuthRegisterViewState extends State<_AuthRegisterView> {
     return _AuthCard(
       children: [
         _AuthBackButton(onPressed: widget.onBack),
-        const _AuthBrand(),
+        const _AnimatedAuthBrand(),
         const SizedBox(height: 22),
         const Text(
           'Criar conta',
@@ -2632,7 +2633,7 @@ class _AuthVerifyEmailViewState extends State<_AuthVerifyEmailView> {
     return _AuthCard(
       children: [
         _AuthBackButton(onPressed: widget.onBack),
-        const _AuthBrand(),
+        const _AnimatedAuthBrand(),
         const SizedBox(height: 28),
         const Icon(Icons.mark_email_read_outlined, color: _authPink, size: 62),
         const SizedBox(height: 18),
@@ -2693,37 +2694,158 @@ class _AuthCard extends StatelessWidget {
   );
 }
 
-class _AuthBrand extends StatelessWidget {
-  const _AuthBrand({this.showTagline = false});
+class _AnimatedAuthBrand extends StatefulWidget {
+  const _AnimatedAuthBrand({this.showTagline = false});
 
   final bool showTagline;
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Semantics(
-        label: 'AuMiau',
-        image: true,
-        child: Image.asset(
-          'assets/branding/aumiau_wordmark.png',
-          width: 330,
-          height: 130,
-          fit: BoxFit.contain,
-        ),
-      ),
-      const SizedBox(height: 4),
-      if (showTagline)
-        const Text(
-          'CUIDADO COM CARINHO',
-          style: TextStyle(
-            color: _muted,
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 1.5,
+  State<_AnimatedAuthBrand> createState() => _AnimatedAuthBrandState();
+}
+
+class _AnimatedAuthBrandState extends State<_AnimatedAuthBrand>
+    with TickerProviderStateMixin {
+  late final AnimationController _catController;
+  late final AnimationController _dogController;
+
+  @override
+  void initState() {
+    super.initState();
+    _catController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+    _dogController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _catController.dispose();
+    _dogController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Semantics(
+          label: 'AuMiau, gatinha e cachorrinho animados',
+          image: true,
+          child: SizedBox(
+            width: 330,
+            height: 142,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Align(
+                  alignment: const Alignment(0, .46),
+                  child: Text.rich(
+                    const TextSpan(
+                      children: [
+                        TextSpan(
+                          text: 'A',
+                          style: TextStyle(
+                            color: _forest,
+                            fontSize: 64,
+                            height: .95,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -4,
+                          ),
+                        ),
+                        TextSpan(
+                          text: 'u',
+                          style: TextStyle(
+                            color: _mango,
+                            fontSize: 64,
+                            height: .95,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -4,
+                          ),
+                        ),
+                        TextSpan(
+                          text: 'Miau',
+                          style: TextStyle(
+                            color: _forest,
+                            fontSize: 64,
+                            height: .95,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: -4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                AnimatedBuilder(
+                  animation: _catController,
+                  builder: (context, child) {
+                    final phase = _catController.value * math.pi;
+                    return Positioned(
+                      left: 0,
+                      top: 0,
+                      child: Transform.translate(
+                        offset: Offset(0, math.sin(phase) * 2.2),
+                        child: Transform.rotate(
+                          angle: math.sin(phase) * .035,
+                          alignment: Alignment.bottomCenter,
+                          child: child,
+                        ),
+                      ),
+                    );
+                  },
+                  child: Image.asset(
+                    'assets/branding/aumiau_cat.png',
+                    width: 124,
+                    height: 124,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+                AnimatedBuilder(
+                  animation: _dogController,
+                  builder: (context, child) {
+                    final breath = math.sin(_dogController.value * math.pi);
+                    return Positioned(
+                      left: 112,
+                      top: 56,
+                      child: Transform.translate(
+                        offset: Offset(0, breath * 1.8),
+                        child: Transform.scale(
+                          scale: 1 + breath * .018,
+                          alignment: Alignment.bottomCenter,
+                          child: child,
+                        ),
+                      ),
+                    );
+                  },
+                  child: Image.asset(
+                    'assets/branding/aumiau_dog.png',
+                    width: 132,
+                    height: 100,
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-    ],
-  );
+        const SizedBox(height: 4),
+        if (widget.showTagline)
+          const Text(
+            'CUIDADO COM CARINHO',
+            style: TextStyle(
+              color: _muted,
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.5,
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 class _AuthBackButton extends StatelessWidget {
