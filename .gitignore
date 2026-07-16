@@ -56,6 +56,10 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+/android/key.properties
+/android/*.jks
+/android/*.keystore
+/android/keys/
 
 # Local backend/mail configuration and data
 /backend/.env

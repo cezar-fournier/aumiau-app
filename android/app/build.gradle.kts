@@ -1,8 +1,29 @@
+import java.io.File
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+val signingProperties = Properties()
+val signingPropertiesFile = rootProject.file("key.properties")
+if (signingPropertiesFile.exists()) {
+    FileInputStream(signingPropertiesFile).use(signingProperties::load)
+}
+
+val releaseStoreFile = signingProperties["storeFile"] as String?
+val releaseStorePassword = signingProperties["storePassword"] as String?
+val releaseKeyAlias = signingProperties["keyAlias"] as String?
+val releaseKeyPassword = signingProperties["keyPassword"] as String?
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() } && releaseStoreFile?.let(::File)?.exists() == true
 
 android {
     namespace = "com.aumiau.aumiau_app"
@@ -26,11 +47,26 @@ android {
         versionName = flutter.versionName
     }
 
+    if (hasReleaseSigning) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword!!
+                keyAlias = releaseKeyAlias!!
+                keyPassword = releaseKeyPassword!!
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                // Permite builds locais até que a assinatura de produção seja
+                // configurada. Tags do GitHub são bloqueadas pelo workflow.
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 }

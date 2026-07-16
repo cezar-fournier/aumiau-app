@@ -1,0 +1,7 @@
+# Copie para android/key.properties em um ambiente local seguro.
+# Nunca versione key.properties ou o arquivo .jks/.keystore.
+
+storeFile=C:/caminho/seguro/aumiau-release.jks
+storePassword=senha-do-keystore
+keyAlias=aumiau
+keyPassword=senha-da-chave
