@@ -181,6 +181,10 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Continuar sem conta'), findsOneWidget);
+    await tester.tap(find.text('Continuar sem conta'));
+    await tester.pumpAndSettle();
+
     expect(find.text('Oi, Cezar! 👋'), findsOneWidget);
     expect(find.text('Cuidados de hoje'), findsOneWidget);
     expect(find.text('Vermífugo do Thor'), findsOneWidget);
@@ -220,6 +224,30 @@ class _FakeHttpClient extends http.BaseClient {
 class _FakeSyncGateway implements SyncGateway {
   Map<String, dynamic>? receivedPayload;
   String? receivedToken;
+
+  @override
+  Future<RegistrationResult> register({
+    required String name,
+    required String phone,
+    required String email,
+    required String password,
+    String? birthDate,
+    required bool termsAccepted,
+  }) async {
+    return const RegistrationResult(
+      email: 'teste@aumiau.app',
+      message: 'Conta criada.',
+      session: SyncAuthSession(accessToken: 'fake-access-token'),
+    );
+  }
+
+  @override
+  Future<SyncAuthSession> verifyEmail({
+    required String email,
+    required String token,
+  }) async {
+    return const SyncAuthSession(accessToken: 'fake-access-token');
+  }
 
   @override
   Future<SyncAuthSession> signIn({

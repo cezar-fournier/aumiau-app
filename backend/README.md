@@ -45,7 +45,15 @@ anteriores são revogadas.
 
 O arquivo `.env` contém credenciais e não deve ser versionado.
 
-## Contas de produção
+## Cadastro de usuários
+
+O aplicativo oferece cadastro público em `POST /auth/register`. O usuário informa
+nome, telefone, e-mail, senha, data de nascimento opcional e aceita os termos.
+Quando `REQUIRE_EMAIL_VERIFICATION=true`, a API envia um token usando
+`suporte@aumiau.app.br`; a confirmação é feita em `POST /auth/verify-email`.
+Após a confirmação, o aplicativo cria a sessão automaticamente.
+
+## Contas administrativas e operação assistida
 
 Crie contas adicionais dentro do container da API. A senha é solicitada
 interativamente e não deve ser passada na linha de comando:

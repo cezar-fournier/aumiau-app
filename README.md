@@ -48,8 +48,8 @@ o arquivo `key.properties` e as senhas nunca devem ser commitados.
 3. Crie e envie uma tag, por exemplo:
 
 ```powershell
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 4. O GitHub Actions compila, valida e anexa o APK e o AAB à Release automaticamente.

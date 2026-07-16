@@ -26,6 +26,8 @@ JWT_ALGORITHM = "HS256"
 TOKEN_TTL_HOURS = int(os.getenv("TOKEN_TTL_HOURS", "24"))
 REFRESH_TTL_DAYS = int(os.getenv("REFRESH_TTL_DAYS", "30"))
 RESET_TOKEN_TTL_MINUTES = int(os.getenv("RESET_TOKEN_TTL_MINUTES", "30"))
+EMAIL_VERIFICATION_TTL_HOURS = int(os.getenv("EMAIL_VERIFICATION_TTL_HOURS", "24"))
+REQUIRE_EMAIL_VERIFICATION = os.getenv("REQUIRE_EMAIL_VERIFICATION", "true").lower() in {"1", "true", "yes"}
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
@@ -38,6 +40,20 @@ STARTED_AT = time.monotonic()
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=180)
     password: str = Field(min_length=8, max_length=128)
+
+
+class RegisterRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=8, max_length=30)
+    email: str = Field(min_length=3, max_length=180)
+    password: str = Field(min_length=8, max_length=128)
+    birthDate: str | None = Field(default=None, max_length=30)
+    termsAccepted: bool
+
+
+class EmailVerificationRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=180)
+    token: str = Field(min_length=32, max_length=256)
 
 
 class RefreshRequest(BaseModel):
@@ -130,6 +146,56 @@ def hash_refresh_token(refresh_token: str) -> str:
 
 def hash_password_reset_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def hash_email_verification_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def issue_email_verification_token(user_id: int) -> tuple[str, datetime]:
+    token = secrets.token_urlsafe(48)
+    expires_at = utc_now() + timedelta(hours=EMAIL_VERIFICATION_TTL_HOURS)
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE email_verification_tokens
+                SET used_at = now()
+                WHERE user_id = %s AND used_at IS NULL
+                """,
+                (user_id,),
+            )
+            cursor.execute(
+                """
+                INSERT INTO email_verification_tokens
+                    (user_id, token_hash, expires_at)
+                VALUES (%s, %s, %s)
+                """,
+                (user_id, hash_email_verification_token(token), expires_at),
+            )
+    return token, expires_at
+
+
+def send_email_verification(recipient: str, token: str, expires_at: datetime) -> None:
+    if not SMTP_HOST or not SMTP_USERNAME or not SMTP_PASSWORD or not SMTP_FROM:
+        raise RuntimeError("SMTP de verificação não configurado.")
+    message = EmailMessage()
+    message["Subject"] = "AuMiau — confirme seu e-mail"
+    message["From"] = SMTP_FROM
+    message["To"] = recipient
+    message.set_content(
+        "Olá!\n\n"
+        "Confirme o seu e-mail para ativar a conta AuMiau.\n\n"
+        f"Token de verificação: {token}\n"
+        f"Validade: até {expires_at.astimezone(timezone.utc).isoformat()}\n\n"
+        "Se você não criou esta conta, ignore esta mensagem.\n"
+    )
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.ehlo()
+        smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+        smtp.send_message(message)
 
 
 def issue_password_reset_token(user_id: int) -> tuple[str, datetime]:
@@ -265,13 +331,23 @@ def initialize_database() -> None:
             id BIGSERIAL PRIMARY KEY,
             email TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL DEFAULT '',
+            phone TEXT NOT NULL DEFAULT '',
+            birth_date TEXT,
+            terms_accepted_at TIMESTAMPTZ,
             is_admin BOOLEAN NOT NULL DEFAULT FALSE,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            email_verified BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """,
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_date TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT TRUE",
         """
         CREATE TABLE IF NOT EXISTS sync_batches (
             id BIGSERIAL PRIMARY KEY,
@@ -323,6 +399,16 @@ def initialize_database() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS email_verification_tokens (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            used_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
     ]
     with database_connection() as connection:
         with connection.cursor() as cursor:
@@ -330,6 +416,7 @@ def initialize_database() -> None:
                 cursor.execute(statement)
             cursor.execute("DELETE FROM auth_sessions WHERE refresh_expires_at <= now()")
             cursor.execute("DELETE FROM password_reset_tokens WHERE expires_at <= now() OR used_at IS NOT NULL")
+            cursor.execute("DELETE FROM email_verification_tokens WHERE expires_at <= now() OR used_at IS NOT NULL")
 
 
 def initialize_bootstrap_user() -> None:
@@ -437,7 +524,7 @@ def login(request: LoginRequest) -> dict[str, str]:
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, email, password_hash, is_active FROM users WHERE email = %s",
+                "SELECT id, email, password_hash, is_active, email_verified FROM users WHERE email = %s",
                 (email,),
             )
             user = cursor.fetchone()
@@ -446,7 +533,85 @@ def login(request: LoginRequest) -> dict[str, str]:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="E-mail ou senha inválidos.",
         )
+    if not user[4]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Confirme o seu e-mail antes de entrar.",
+        )
     return create_auth_session(user[0], user[1])
+
+
+@app.post("/auth/register")
+def register(request: RegisterRequest) -> dict[str, Any]:
+    if not request.termsAccepted:
+        raise HTTPException(status_code=400, detail="Aceite os Termos de Uso e a Política de Privacidade.")
+    email = request.email.strip().lower()
+    if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+        raise HTTPException(status_code=400, detail="Informe um e-mail válido.")
+    verified = not REQUIRE_EMAIL_VERIFICATION
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1 FROM users WHERE email = %s", (email,))
+            if cursor.fetchone() is not None:
+                raise HTTPException(status_code=409, detail="E-mail já cadastrado.")
+            cursor.execute(
+                """
+                INSERT INTO users
+                    (email, password_hash, full_name, phone, birth_date,
+                     terms_accepted_at, email_verified)
+                VALUES (%s, %s, %s, %s, %s, now(), %s)
+                RETURNING id
+                """,
+                (email, hash_password(request.password), request.name.strip(),
+                 request.phone.strip(), request.birthDate, verified),
+            )
+            user_id = cursor.fetchone()[0]
+    if not verified:
+        try:
+            token, expires_at = issue_email_verification_token(user_id)
+            send_email_verification(email, token, expires_at)
+        except (OSError, smtplib.SMTPException, RuntimeError) as error:
+            logger.exception("email_verification_requested user_id=%s email_sent=false", user_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Não foi possível enviar o e-mail de confirmação agora.",
+            ) from error
+        return {
+            "status": "verification_required",
+            "email": email,
+            "message": "Conta criada. Enviamos um token de confirmação para o seu e-mail.",
+        }
+    session = create_auth_session(user_id, email)
+    session.update({"status": "authenticated", "email": email})
+    return session
+
+
+@app.post("/auth/verify-email")
+def verify_email(request: EmailVerificationRequest) -> dict[str, Any]:
+    email = request.email.strip().lower()
+    token_hash = hash_email_verification_token(request.token.strip())
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT tokens.id, users.id, users.email
+                FROM email_verification_tokens AS tokens
+                JOIN users ON users.id = tokens.user_id
+                WHERE users.email = %s
+                  AND tokens.token_hash = %s
+                  AND tokens.used_at IS NULL
+                  AND tokens.expires_at > now()
+                """,
+                (email, token_hash),
+            )
+            verification = cursor.fetchone()
+            if verification is None:
+                raise HTTPException(status_code=400, detail="Token de confirmação inválido ou expirado.")
+            cursor.execute("UPDATE users SET email_verified = TRUE WHERE id = %s", (verification[1],))
+            cursor.execute("UPDATE email_verification_tokens SET used_at = now() WHERE id = %s", (verification[0],))
+    session = create_auth_session(verification[1], verification[2])
+    session.update({"status": "authenticated", "email": verification[2]})
+    return session
 
 
 @app.post("/auth/password-reset/request")

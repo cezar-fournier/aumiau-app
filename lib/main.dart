@@ -21,6 +21,11 @@ const _muted = Color(0xFF6B7A73);
 const _line = Color(0xFFE7E3D8);
 const _danger = Color(0xFFD9534F);
 const _success = Color(0xFF3F8E5F);
+const _authPink = Color(0xFFF53668);
+const _authPinkDark = Color(0xFFC91E4D);
+const _authBlush = Color(0xFFFFF4F1);
+
+enum _AuthScreen { welcome, login, register, verifyEmail }
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -559,6 +564,11 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   bool _loading = true;
   String? _loadError;
   bool _updateNoticeShown = false;
+  bool _showAuthGate = true;
+  _AuthScreen _authScreen = _AuthScreen.welcome;
+  bool _authBusy = false;
+  String? _pendingVerificationEmail;
+  String? _pendingRegistrationName;
 
   @override
   void initState() {
@@ -1626,18 +1636,6 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     }
   }
 
-  Future<Map<String, String>?> _askSyncCredentials() async {
-    final result = await showDialog<Map<String, String>>(
-      context: context,
-      builder: (_) => _SyncCredentialsDialog(initialEmail: _profile.email),
-    );
-    if (result?['action'] == 'recovery') {
-      await _showPasswordRecovery(result?['email'] ?? _profile.email);
-      return null;
-    }
-    return result;
-  }
-
   Future<void> _showPasswordRecovery(String initialEmail) async {
     await showDialog<void>(
       context: context,
@@ -1651,8 +1649,153 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   Future<void> _restoreSession() async {
     final session = await _sessionStore.read();
-    if (!mounted || session == null) return;
-    setState(() => _accessToken = session.accessToken);
+    if (!mounted) return;
+    if (session == null) {
+      setState(() => _showAuthGate = true);
+      return;
+    }
+    setState(() {
+      _accessToken = session.accessToken;
+      _showAuthGate = false;
+    });
+  }
+
+  void _openAuth(_AuthScreen screen) {
+    if (!mounted) return;
+    setState(() {
+      _authScreen = screen;
+      _showAuthGate = true;
+    });
+  }
+
+  Future<void> _continueOffline() async {
+    if (!mounted) return;
+    setState(() => _showAuthGate = false);
+  }
+
+  Future<void> _completeAuthenticatedSession({
+    required String email,
+    required SyncAuthSession session,
+    String? name,
+  }) async {
+    _accessToken = session.accessToken;
+    await _sessionStore.save(
+      email: email,
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+    );
+    if (name != null && name.trim().isNotEmpty) {
+      await _database.saveProfile(name: name.trim(), email: email);
+    }
+    if (!mounted) return;
+    setState(() {
+      _showAuthGate = false;
+      _authBusy = false;
+      _selectedIndex = 0;
+    });
+    await _loadData();
+  }
+
+  Future<void> _loginFromAuth({
+    required String email,
+    required String password,
+  }) async {
+    if (_authBusy) return;
+    setState(() => _authBusy = true);
+    try {
+      final session = await _syncGateway.signIn(
+        email: email.trim(),
+        password: password,
+      );
+      await _completeAuthenticatedSession(
+        email: email.trim(),
+        session: session,
+      );
+    } on SyncGatewayException catch (error) {
+      if (!mounted) return;
+      setState(() => _authBusy = false);
+      _showAuthError(error.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _authBusy = false);
+      _showAuthError('Não foi possível entrar agora. Verifique sua conexão.');
+    }
+  }
+
+  Future<void> _registerFromAuth({
+    required String name,
+    required String phone,
+    required String email,
+    required String password,
+    String? birthDate,
+  }) async {
+    if (_authBusy) return;
+    setState(() => _authBusy = true);
+    try {
+      final result = await _syncGateway.register(
+        name: name,
+        phone: phone,
+        email: email.trim(),
+        password: password,
+        birthDate: birthDate,
+        termsAccepted: true,
+      );
+      if (result.session != null) {
+        await _completeAuthenticatedSession(
+          email: result.email,
+          session: result.session!,
+          name: name,
+        );
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _authBusy = false;
+        _pendingVerificationEmail = result.email;
+        _pendingRegistrationName = name;
+        _authScreen = _AuthScreen.verifyEmail;
+      });
+    } on SyncGatewayException catch (error) {
+      if (!mounted) return;
+      setState(() => _authBusy = false);
+      _showAuthError(error.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _authBusy = false);
+      _showAuthError('Não foi possível criar a conta agora.');
+    }
+  }
+
+  Future<void> _verifyEmailFromAuth(String token) async {
+    final email = _pendingVerificationEmail;
+    if (_authBusy || email == null) return;
+    setState(() => _authBusy = true);
+    try {
+      final session = await _syncGateway.verifyEmail(
+        email: email,
+        token: token,
+      );
+      await _completeAuthenticatedSession(
+        email: email,
+        session: session,
+        name: _pendingRegistrationName,
+      );
+    } on SyncGatewayException catch (error) {
+      if (!mounted) return;
+      setState(() => _authBusy = false);
+      _showAuthError(error.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _authBusy = false);
+      _showAuthError('Não foi possível confirmar o e-mail agora.');
+    }
+  }
+
+  void _showAuthError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message), backgroundColor: _danger));
   }
 
   Future<SyncBatchAck?> _synchronizeWithRefresh(StoredSession session) async {
@@ -1686,37 +1829,15 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   Future<void> _syncNow() async {
     if (_syncing) return;
     final storedSession = await _sessionStore.read();
-    Map<String, String>? credentials;
     if (storedSession == null) {
-      credentials = await _askSyncCredentials();
-      if (credentials == null) return;
+      _openAuth(_AuthScreen.login);
+      return;
     }
     if (!mounted) return;
     setState(() => _syncing = true);
     try {
-      final email = storedSession?.email ?? credentials!['email']!;
-      late StoredSession activeSession;
-      if (storedSession != null) {
-        _accessToken = storedSession.accessToken;
-        activeSession = storedSession;
-      } else {
-        final session = await _syncGateway.signIn(
-          email: email,
-          password: credentials!['password']!,
-        );
-        _accessToken = session.accessToken;
-        activeSession = StoredSession(
-          email: email,
-          accessToken: session.accessToken,
-          refreshToken: session.refreshToken,
-        );
-        await _sessionStore.save(
-          email: email,
-          accessToken: session.accessToken,
-          refreshToken: session.refreshToken,
-        );
-      }
-      final acknowledgement = await _synchronizeWithRefresh(activeSession);
+      _accessToken = storedSession.accessToken;
+      final acknowledgement = await _synchronizeWithRefresh(storedSession);
       await _loadData();
       if (!mounted) return;
       final count = acknowledgement?.acknowledgedOperationIds.length ?? 0;
@@ -1765,7 +1886,11 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       _accessToken = null;
     }
     if (!mounted) return;
-    setState(() {});
+    setState(() {
+      _authScreen = _AuthScreen.welcome;
+      _showAuthGate = true;
+      _selectedIndex = 0;
+    });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Sessão encerrada neste aparelho.')),
     );
@@ -1848,6 +1973,22 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
             ),
           ),
         ),
+      );
+    }
+
+    if (_showAuthGate) {
+      return _AuthFlowPage(
+        screen: _authScreen,
+        busy: _authBusy,
+        verificationEmail: _pendingVerificationEmail,
+        onLogin: () => _openAuth(_AuthScreen.login),
+        onRegister: () => _openAuth(_AuthScreen.register),
+        onOffline: _continueOffline,
+        onBack: () => _openAuth(_AuthScreen.welcome),
+        onSubmitLogin: _loginFromAuth,
+        onSubmitRegister: _registerFromAuth,
+        onVerifyEmail: _verifyEmailFromAuth,
+        onRecovery: () => _showPasswordRecovery(_profile.email),
       );
     }
 
@@ -1937,6 +2078,800 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       ),
     );
   }
+}
+
+class _AuthFlowPage extends StatelessWidget {
+  const _AuthFlowPage({
+    required this.screen,
+    required this.busy,
+    required this.verificationEmail,
+    required this.onLogin,
+    required this.onRegister,
+    required this.onOffline,
+    required this.onBack,
+    required this.onSubmitLogin,
+    required this.onSubmitRegister,
+    required this.onVerifyEmail,
+    required this.onRecovery,
+  });
+
+  final _AuthScreen screen;
+  final bool busy;
+  final String? verificationEmail;
+  final VoidCallback onLogin;
+  final VoidCallback onRegister;
+  final Future<void> Function() onOffline;
+  final VoidCallback onBack;
+  final Future<void> Function({required String email, required String password})
+  onSubmitLogin;
+  final Future<void> Function({
+    required String name,
+    required String phone,
+    required String email,
+    required String password,
+    String? birthDate,
+  })
+  onSubmitRegister;
+  final Future<void> Function(String token) onVerifyEmail;
+  final Future<void> Function() onRecovery;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _authBlush,
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFFFFF8F6), Color(0xFFFFE9E8)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: Stack(
+          children: [
+            const Positioned(
+              top: -80,
+              left: -70,
+              child: _AuthBubble(size: 210, color: Color(0x33FFB5B3)),
+            ),
+            const Positioned(
+              right: -90,
+              bottom: -70,
+              child: _AuthBubble(size: 230, color: Color(0x22F53668)),
+            ),
+            SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 22, 24, 30),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 520),
+                    child: _buildScreen(context),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScreen(BuildContext context) {
+    switch (screen) {
+      case _AuthScreen.welcome:
+        return _AuthWelcomeView(
+          onLogin: onLogin,
+          onRegister: onRegister,
+          onOffline: onOffline,
+        );
+      case _AuthScreen.login:
+        return _AuthLoginView(
+          busy: busy,
+          onBack: onBack,
+          onRegister: onRegister,
+          onSubmit: onSubmitLogin,
+          onRecovery: onRecovery,
+        );
+      case _AuthScreen.register:
+        return _AuthRegisterView(
+          busy: busy,
+          onBack: onBack,
+          onLogin: onLogin,
+          onSubmit: onSubmitRegister,
+        );
+      case _AuthScreen.verifyEmail:
+        return _AuthVerifyEmailView(
+          busy: busy,
+          email: verificationEmail ?? '',
+          onBack: onBack,
+          onSubmit: onVerifyEmail,
+        );
+    }
+  }
+}
+
+class _AuthBubble extends StatelessWidget {
+  const _AuthBubble({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+  );
+}
+
+class _AuthWelcomeView extends StatelessWidget {
+  const _AuthWelcomeView({
+    required this.onLogin,
+    required this.onRegister,
+    required this.onOffline,
+  });
+
+  final VoidCallback onLogin;
+  final VoidCallback onRegister;
+  final Future<void> Function() onOffline;
+
+  @override
+  Widget build(BuildContext context) {
+    return _AuthCard(
+      children: [
+        const SizedBox(height: 18),
+        const _AuthBrand(showTagline: true),
+        const SizedBox(height: 30),
+        const Text(
+          'Cuide de quem ama',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: _ink,
+            fontSize: 28,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'Rotina, saúde e carinho para seus pets em um só lugar.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _muted, fontSize: 16, height: 1.45),
+        ),
+        const SizedBox(height: 34),
+        _AuthPrimaryButton(label: 'Entrar', onPressed: onLogin),
+        const SizedBox(height: 14),
+        _AuthOutlineButton(label: 'Criar conta', onPressed: onRegister),
+        const SizedBox(height: 24),
+        TextButton(
+          onPressed: onOffline,
+          child: const Text(
+            'Continuar sem conta',
+            style: TextStyle(color: _authPinkDark, fontWeight: FontWeight.w700),
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Seus dados continuam disponíveis offline no aparelho.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _muted, fontSize: 12),
+        ),
+        const SizedBox(height: 14),
+      ],
+    );
+  }
+}
+
+class _AuthLoginView extends StatefulWidget {
+  const _AuthLoginView({
+    required this.busy,
+    required this.onBack,
+    required this.onRegister,
+    required this.onSubmit,
+    required this.onRecovery,
+  });
+
+  final bool busy;
+  final VoidCallback onBack;
+  final VoidCallback onRegister;
+  final Future<void> Function({required String email, required String password})
+  onSubmit;
+  final Future<void> Function() onRecovery;
+
+  @override
+  State<_AuthLoginView> createState() => _AuthLoginViewState();
+}
+
+class _AuthLoginViewState extends State<_AuthLoginView> {
+  late final TextEditingController _email;
+  late final TextEditingController _password;
+  bool _obscure = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _email = TextEditingController();
+    _password = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final email = _email.text.trim();
+    if (!email.contains('@') || _password.text.length < 8) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Informe um e-mail e uma senha válida.')),
+      );
+      return;
+    }
+    await widget.onSubmit(email: email, password: _password.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _AuthCard(
+      children: [
+        _AuthBackButton(onPressed: widget.onBack),
+        const _AuthBrand(),
+        const SizedBox(height: 24),
+        const Text(
+          'Bem-vindo(a)! 👋',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: _ink,
+            fontSize: 28,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Entre para acompanhar a rotina dos seus pets.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _muted, fontSize: 15),
+        ),
+        const SizedBox(height: 28),
+        _AuthField(
+          controller: _email,
+          label: 'E-mail',
+          icon: Icons.mail_outline,
+          keyboardType: TextInputType.emailAddress,
+        ),
+        const SizedBox(height: 14),
+        _AuthField(
+          controller: _password,
+          label: 'Senha',
+          icon: Icons.lock_outline,
+          obscureText: _obscure,
+          suffix: IconButton(
+            onPressed: () => setState(() => _obscure = !_obscure),
+            icon: Icon(
+              _obscure
+                  ? Icons.visibility_outlined
+                  : Icons.visibility_off_outlined,
+            ),
+          ),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            onPressed: widget.busy ? null : widget.onRecovery,
+            child: const Text('Esqueci minha senha?'),
+          ),
+        ),
+        _AuthPrimaryButton(
+          label: 'Entrar',
+          busy: widget.busy,
+          onPressed: _submit,
+        ),
+        const SizedBox(height: 22),
+        _AuthFooterLink(
+          prefix: 'Ainda não tem conta? ',
+          action: 'Criar conta',
+          onPressed: widget.onRegister,
+        ),
+      ],
+    );
+  }
+}
+
+class _AuthRegisterView extends StatefulWidget {
+  const _AuthRegisterView({
+    required this.busy,
+    required this.onBack,
+    required this.onLogin,
+    required this.onSubmit,
+  });
+
+  final bool busy;
+  final VoidCallback onBack;
+  final VoidCallback onLogin;
+  final Future<void> Function({
+    required String name,
+    required String phone,
+    required String email,
+    required String password,
+    String? birthDate,
+  })
+  onSubmit;
+
+  @override
+  State<_AuthRegisterView> createState() => _AuthRegisterViewState();
+}
+
+class _AuthRegisterViewState extends State<_AuthRegisterView> {
+  late final TextEditingController _name;
+  late final TextEditingController _phone;
+  late final TextEditingController _email;
+  late final TextEditingController _password;
+  late final TextEditingController _confirmPassword;
+  DateTime? _birthDate;
+  bool _obscure = true;
+  bool _acceptedTerms = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController();
+    _phone = TextEditingController();
+    _email = TextEditingController();
+    _password = TextEditingController();
+    _confirmPassword = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _phone.dispose();
+    _email.dispose();
+    _password.dispose();
+    _confirmPassword.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickBirthDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+      initialDate: _birthDate ?? DateTime(1990),
+      builder: (context, child) => Theme(
+        data: Theme.of(
+          context,
+        ).copyWith(colorScheme: const ColorScheme.light(primary: _authPink)),
+        child: child!,
+      ),
+    );
+    if (picked != null) setState(() => _birthDate = picked);
+  }
+
+  Future<void> _submit() async {
+    if (_name.text.trim().length < 2 ||
+        _phone.text.trim().length < 8 ||
+        !_email.text.contains('@') ||
+        _password.text.length < 8 ||
+        _password.text != _confirmPassword.text ||
+        !_acceptedTerms) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Revise os dados e aceite os termos para continuar.'),
+        ),
+      );
+      return;
+    }
+    await widget.onSubmit(
+      name: _name.text.trim(),
+      phone: _phone.text.trim(),
+      email: _email.text.trim(),
+      password: _password.text,
+      birthDate: _birthDate?.toIso8601String(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final birthLabel = _birthDate == null
+        ? 'Data de nascimento (opcional)'
+        : '${_birthDate!.day.toString().padLeft(2, '0')}/${_birthDate!.month.toString().padLeft(2, '0')}/${_birthDate!.year}';
+    return _AuthCard(
+      children: [
+        _AuthBackButton(onPressed: widget.onBack),
+        const _AuthBrand(),
+        const SizedBox(height: 22),
+        const Text(
+          'Criar conta',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: _ink,
+            fontSize: 28,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Vamos começar!',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: _muted, fontSize: 16),
+        ),
+        const SizedBox(height: 24),
+        _AuthField(
+          controller: _name,
+          label: 'Nome completo',
+          icon: Icons.person_outline,
+        ),
+        const SizedBox(height: 12),
+        _AuthField(
+          controller: _phone,
+          label: 'Telefone/WhatsApp',
+          icon: Icons.phone_outlined,
+          keyboardType: TextInputType.phone,
+        ),
+        const SizedBox(height: 12),
+        _AuthField(
+          controller: _email,
+          label: 'E-mail',
+          icon: Icons.mail_outline,
+          keyboardType: TextInputType.emailAddress,
+        ),
+        const SizedBox(height: 12),
+        _AuthField(
+          controller: _password,
+          label: 'Senha (mínimo de 8 caracteres)',
+          icon: Icons.lock_outline,
+          obscureText: _obscure,
+          suffix: IconButton(
+            onPressed: () => setState(() => _obscure = !_obscure),
+            icon: Icon(
+              _obscure
+                  ? Icons.visibility_outlined
+                  : Icons.visibility_off_outlined,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _AuthField(
+          controller: _confirmPassword,
+          label: 'Confirmar senha',
+          icon: Icons.lock_reset_outlined,
+          obscureText: _obscure,
+        ),
+        const SizedBox(height: 12),
+        InkWell(
+          onTap: _pickBirthDate,
+          borderRadius: BorderRadius.circular(14),
+          child: InputDecorator(
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.calendar_month_outlined),
+            ),
+            child: Text(
+              birthLabel,
+              style: TextStyle(color: _birthDate == null ? _muted : _ink),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        CheckboxListTile(
+          value: _acceptedTerms,
+          onChanged: widget.busy
+              ? null
+              : (value) => setState(() => _acceptedTerms = value ?? false),
+          contentPadding: EdgeInsets.zero,
+          activeColor: _authPink,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text(
+            'Li e aceito os Termos de Uso e a Política de Privacidade.',
+            style: TextStyle(fontSize: 13, height: 1.35),
+          ),
+        ),
+        const SizedBox(height: 8),
+        _AuthPrimaryButton(
+          label: 'Criar conta',
+          busy: widget.busy,
+          onPressed: _submit,
+        ),
+        const SizedBox(height: 22),
+        _AuthFooterLink(
+          prefix: 'Já tem conta? ',
+          action: 'Entrar',
+          onPressed: widget.onLogin,
+        ),
+      ],
+    );
+  }
+}
+
+class _AuthVerifyEmailView extends StatefulWidget {
+  const _AuthVerifyEmailView({
+    required this.busy,
+    required this.email,
+    required this.onBack,
+    required this.onSubmit,
+  });
+
+  final bool busy;
+  final String email;
+  final VoidCallback onBack;
+  final Future<void> Function(String token) onSubmit;
+
+  @override
+  State<_AuthVerifyEmailView> createState() => _AuthVerifyEmailViewState();
+}
+
+class _AuthVerifyEmailViewState extends State<_AuthVerifyEmailView> {
+  late final TextEditingController _token;
+
+  @override
+  void initState() {
+    super.initState();
+    _token = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _token.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_token.text.trim().length < 32) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Informe o token completo enviado por e-mail.'),
+        ),
+      );
+      return;
+    }
+    await widget.onSubmit(_token.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _AuthCard(
+      children: [
+        _AuthBackButton(onPressed: widget.onBack),
+        const _AuthBrand(),
+        const SizedBox(height: 28),
+        const Icon(Icons.mark_email_read_outlined, color: _authPink, size: 62),
+        const SizedBox(height: 18),
+        const Text(
+          'Confirme seu e-mail',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: _ink,
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Enviamos um token de confirmação para ${widget.email}.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: _muted, height: 1.45),
+        ),
+        const SizedBox(height: 26),
+        _AuthField(
+          controller: _token,
+          label: 'Token de confirmação',
+          icon: Icons.key_outlined,
+          keyboardType: TextInputType.text,
+        ),
+        const SizedBox(height: 18),
+        _AuthPrimaryButton(
+          label: 'Confirmar e entrar',
+          busy: widget.busy,
+          onPressed: _submit,
+        ),
+      ],
+    );
+  }
+}
+
+class _AuthCard extends StatelessWidget {
+  const _AuthCard({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.fromLTRB(22, 14, 22, 22),
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: .88),
+      borderRadius: BorderRadius.circular(28),
+      border: Border.all(color: const Color(0x33F53668)),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x16000000),
+          blurRadius: 28,
+          offset: Offset(0, 12),
+        ),
+      ],
+    ),
+    child: Column(children: children),
+  );
+}
+
+class _AuthBrand extends StatelessWidget {
+  const _AuthBrand({this.showTagline = false});
+
+  final bool showTagline;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      Container(
+        width: 88,
+        height: 88,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _authPink.withValues(alpha: .10),
+          border: Border.all(color: _authPink, width: 2),
+        ),
+        child: const Icon(Icons.pets_rounded, color: _authPink, size: 48),
+      ),
+      const SizedBox(height: 10),
+      const Text(
+        'AuMiau',
+        style: TextStyle(
+          color: _authPinkDark,
+          fontSize: 28,
+          fontWeight: FontWeight.w900,
+          letterSpacing: .3,
+        ),
+      ),
+      if (showTagline)
+        const Text(
+          'CUIDADO COM CARINHO',
+          style: TextStyle(
+            color: _muted,
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.5,
+          ),
+        ),
+    ],
+  );
+}
+
+class _AuthBackButton extends StatelessWidget {
+  const _AuthBackButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: Alignment.centerLeft,
+    child: IconButton(
+      onPressed: onPressed,
+      icon: const Icon(Icons.arrow_back, color: _ink),
+    ),
+  );
+}
+
+class _AuthField extends StatelessWidget {
+  const _AuthField({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    this.keyboardType,
+    this.obscureText = false,
+    this.suffix,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final TextInputType? keyboardType;
+  final bool obscureText;
+  final Widget? suffix;
+
+  @override
+  Widget build(BuildContext context) => TextField(
+    controller: controller,
+    keyboardType: keyboardType,
+    obscureText: obscureText,
+    decoration: InputDecoration(
+      labelText: label,
+      prefixIcon: Icon(icon, color: _authPink),
+      suffixIcon: suffix,
+    ),
+  );
+}
+
+class _AuthPrimaryButton extends StatelessWidget {
+  const _AuthPrimaryButton({
+    required this.label,
+    required this.onPressed,
+    this.busy = false,
+  });
+
+  final String label;
+  final VoidCallback onPressed;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    height: 54,
+    child: FilledButton(
+      onPressed: busy ? null : onPressed,
+      style: FilledButton.styleFrom(
+        backgroundColor: _authPink,
+        foregroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      child: busy
+          ? const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            )
+          : Text(
+              label,
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+            ),
+    ),
+  );
+}
+
+class _AuthOutlineButton extends StatelessWidget {
+  const _AuthOutlineButton({required this.label, required this.onPressed});
+
+  final String label;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    height: 54,
+    child: OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: _ink,
+        side: const BorderSide(color: _authPink, width: 1.5),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+      ),
+    ),
+  );
+}
+
+class _AuthFooterLink extends StatelessWidget {
+  const _AuthFooterLink({
+    required this.prefix,
+    required this.action,
+    required this.onPressed,
+  });
+
+  final String prefix;
+  final String action;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+    alignment: WrapAlignment.center,
+    children: [
+      Text(prefix, style: const TextStyle(color: _muted)),
+      GestureDetector(
+        onTap: onPressed,
+        child: Text(
+          action,
+          style: const TextStyle(
+            color: _authPinkDark,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ),
+    ],
+  );
 }
 
 class TodayPage extends StatelessWidget {

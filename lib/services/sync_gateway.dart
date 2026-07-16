@@ -14,6 +14,20 @@ class SyncAuthSession {
   final DateTime? expiresAt;
 }
 
+class RegistrationResult {
+  const RegistrationResult({
+    required this.email,
+    required this.message,
+    this.session,
+    this.verificationRequired = false,
+  });
+
+  final String email;
+  final String message;
+  final SyncAuthSession? session;
+  final bool verificationRequired;
+}
+
 class SyncBatchAck {
   const SyncBatchAck({required this.acknowledgedOperationIds, this.serverTime});
 
@@ -33,6 +47,20 @@ class SyncGatewayException implements Exception {
 }
 
 abstract interface class SyncGateway {
+  Future<RegistrationResult> register({
+    required String name,
+    required String phone,
+    required String email,
+    required String password,
+    String? birthDate,
+    required bool termsAccepted,
+  });
+
+  Future<SyncAuthSession> verifyEmail({
+    required String email,
+    required String token,
+  });
+
   Future<SyncAuthSession> signIn({
     required String email,
     required String password,
@@ -65,6 +93,52 @@ class HttpSyncGateway implements SyncGateway {
   final Uri baseUri;
   final http.Client _client;
   final Duration timeout;
+
+  @override
+  Future<RegistrationResult> register({
+    required String name,
+    required String phone,
+    required String email,
+    required String password,
+    String? birthDate,
+    required bool termsAccepted,
+  }) async {
+    final response = await _post(
+      'auth/register',
+      body: {
+        'name': name,
+        'phone': phone,
+        'email': email,
+        'password': password,
+        'birthDate': birthDate,
+        'termsAccepted': termsAccepted,
+      },
+    );
+    final data = _decodeObject(response);
+    final session = data['accessToken'] is String
+        ? _decodeSession(response)
+        : null;
+    return RegistrationResult(
+      email: data['email'] is String ? data['email'] as String : email,
+      message: data['message'] is String
+          ? data['message'] as String
+          : 'Conta criada com sucesso.',
+      session: session,
+      verificationRequired: data['status'] == 'verification_required',
+    );
+  }
+
+  @override
+  Future<SyncAuthSession> verifyEmail({
+    required String email,
+    required String token,
+  }) async {
+    final response = await _post(
+      'auth/verify-email',
+      body: {'email': email, 'token': token},
+    );
+    return _decodeSession(response);
+  }
 
   @override
   Future<SyncAuthSession> signIn({
