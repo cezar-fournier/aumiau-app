@@ -2090,8 +2090,12 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 pixPriceFor('family_yearly', 25.00),
                 textAlign: TextAlign.end,
               ),
-              onTap: () =>
-                  openPix(dialogContext, 'family_yearly', 'Family anual', 25.00),
+              onTap: () => openPix(
+                dialogContext,
+                'family_yearly',
+                'Family anual',
+                25.00,
+              ),
             ),
             const SizedBox(height: 8),
             const Text(
@@ -2174,6 +2178,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     final qrCodeBase64 = onlineOrder['qrCodeBase64'] is String
         ? onlineOrder['qrCodeBase64'] as String
         : null;
+    final isTestEnvironment = onlineOrder['environment'] == 'test';
     final ticketUrl = onlineOrder['ticketUrl'] is String
         ? onlineOrder['ticketUrl'] as String
         : null;
@@ -2194,29 +2199,32 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 ),
               ),
               const SizedBox(height: 10),
-              const Text(
-                'Escaneie o QR Code usando o aplicativo do seu banco.',
+              Text(
+                isTestEnvironment
+                    ? 'Ambiente de teste: use “Abrir pagamento” para simular a cobrança. Bancos reais não processam este QR.'
+                    : 'Escaneie o QR Code usando o aplicativo do seu banco.',
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 12),
               SizedBox(
                 width: 230,
                 height: 230,
-                 child: qrCodeBase64 != null
-                     ? Image.memory(
-                         base64Decode(qrCodeBase64),
-                         fit: BoxFit.contain,
-                         errorBuilder: (context, error, stackTrace) => QrImageView(
-                           data: pixCode,
-                           version: QrVersions.auto,
-                           backgroundColor: Colors.white,
-                         ),
-                       )
-                     : QrImageView(
-                         data: pixCode,
-                         version: QrVersions.auto,
-                         backgroundColor: Colors.white,
-                       ),
+                child: qrCodeBase64 != null
+                    ? Image.memory(
+                        base64Decode(qrCodeBase64),
+                        fit: BoxFit.contain,
+                        errorBuilder: (context, error, stackTrace) =>
+                            QrImageView(
+                              data: pixCode,
+                              version: QrVersions.auto,
+                              backgroundColor: Colors.white,
+                            ),
+                      )
+                    : QrImageView(
+                        data: pixCode,
+                        version: QrVersions.auto,
+                        backgroundColor: Colors.white,
+                      ),
               ),
               const SizedBox(height: 12),
               const Align(
@@ -2242,7 +2250,9 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
               ),
               const SizedBox(height: 10),
               Text(
-                    'Após o pagamento, o Mercado Pago notificará o servidor. O Family será liberado depois da confirmação do pagamento.',
+                isTestEnvironment
+                    ? 'Este pagamento está no sandbox do Mercado Pago e não libera uma cobrança real.'
+                    : 'Após o pagamento, o Mercado Pago notificará o servidor. O Family será liberado depois da confirmação do pagamento.',
                 style: const TextStyle(
                   fontSize: 12,
                   color: _danger,
@@ -2280,9 +2290,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 if (updated['paid'] == true) {
                   await _refreshAccountEntitlement();
                   if (dialogContext.mounted) Navigator.pop(dialogContext);
-                  _showProductMessage(
-                    'Pagamento confirmado. Family liberado.',
-                  );
+                  _showProductMessage('Pagamento confirmado. Family liberado.');
                 } else {
                   _showProductMessage('Pagamento ainda não confirmado.');
                 }

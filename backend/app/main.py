@@ -1314,6 +1314,7 @@ def create_billing_order(
         "qrCode": qr_code,
         "qrCodeBase64": payment["qrCodeBase64"],
         "ticketUrl": payment["ticketUrl"],
+        "environment": MERCADOPAGO_ENVIRONMENT,
         "externalReference": external_reference,
         "expiresAt": expires_at.isoformat(),
     }
