@@ -21,9 +21,9 @@ const _muted = Color(0xFF6B7A73);
 const _line = Color(0xFFE7E3D8);
 const _danger = Color(0xFFD9534F);
 const _success = Color(0xFF3F8E5F);
-const _authPink = Color(0xFFF53668);
-const _authPinkDark = Color(0xFFC91E4D);
-const _authBlush = Color(0xFFFFF4F1);
+const _authPink = _forest;
+const _authPinkDark = _forestDark;
+const _authBlush = _paper;
 
 enum _AuthScreen { welcome, login, register, verifyEmail }
 
@@ -2122,7 +2122,7 @@ class _AuthFlowPage extends StatelessWidget {
       body: DecoratedBox(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
-            colors: [Color(0xFFFFF8F6), Color(0xFFFFE9E8)],
+            colors: [_paper, Color(0xFFF1EEE5)],
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
           ),
@@ -2132,12 +2132,12 @@ class _AuthFlowPage extends StatelessWidget {
             const Positioned(
               top: -80,
               left: -70,
-              child: _AuthBubble(size: 210, color: Color(0x33FFB5B3)),
+              child: _AuthBubble(size: 210, color: Color(0x22FFB627)),
             ),
             const Positioned(
               right: -90,
               bottom: -70,
-              child: _AuthBubble(size: 230, color: Color(0x22F53668)),
+              child: _AuthBubble(size: 230, color: Color(0x221E4D40)),
             ),
             SafeArea(
               child: SingleChildScrollView(
@@ -2680,7 +2680,7 @@ class _AuthCard extends StatelessWidget {
     decoration: BoxDecoration(
       color: Colors.white.withValues(alpha: .88),
       borderRadius: BorderRadius.circular(28),
-      border: Border.all(color: const Color(0x33F53668)),
+      border: Border.all(color: const Color(0x331E4D40)),
       boxShadow: const [
         BoxShadow(
           color: Color(0x16000000),
@@ -2701,26 +2701,17 @@ class _AuthBrand extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Column(
     children: [
-      Container(
-        width: 88,
-        height: 88,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: _authPink.withValues(alpha: .10),
-          border: Border.all(color: _authPink, width: 2),
-        ),
-        child: const Icon(Icons.pets_rounded, color: _authPink, size: 48),
-      ),
-      const SizedBox(height: 10),
-      const Text(
-        'AuMiau',
-        style: TextStyle(
-          color: _authPinkDark,
-          fontSize: 28,
-          fontWeight: FontWeight.w900,
-          letterSpacing: .3,
+      Semantics(
+        label: 'AuMiau',
+        image: true,
+        child: Image.asset(
+          'assets/branding/aumiau_wordmark.png',
+          width: 330,
+          height: 130,
+          fit: BoxFit.contain,
         ),
       ),
+      const SizedBox(height: 4),
       if (showTagline)
         const Text(
           'CUIDADO COM CARINHO',
