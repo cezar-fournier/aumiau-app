@@ -1,9 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'config/app_config.dart';
 import 'data/app_database.dart';
+import 'domain/product_plan.dart';
 import 'services/backup_service.dart';
 import 'services/notification_service.dart';
 import 'services/pdf_service.dart';
@@ -175,15 +180,27 @@ class LocalProfile {
   LocalProfile({
     required this.name,
     required this.email,
-    this.plan = 'Gratuito',
+    this.plan = 'free_offline',
+    this.familyEnabled = false,
   });
 
   String name;
   String email;
   String plan;
+  bool familyEnabled;
 
-  factory LocalProfile.defaultProfile() =>
-      LocalProfile(name: 'Cezar Fournier', email: 'cezar@exemplo.com');
+  factory LocalProfile.defaultProfile() => LocalProfile(name: '', email: '');
+
+  ProductPlan get productPlan {
+    final planDefinition = ProductCatalog.fromCode(plan);
+    if (planDefinition.isFamily && !familyEnabled) {
+      return ProductCatalog.freeOffline;
+    }
+    return planDefinition;
+  }
+
+  bool get isFamily => productPlan.isFamily;
+  bool get isFreeOffline => productPlan.isFreeOffline;
 }
 
 class Reminder {
@@ -471,6 +488,7 @@ class _HomeShellState extends State<HomeShell> {
     final pages = [
       TodayPage(
         today: _today,
+        profileName: 'Cezar Fournier',
         pets: _pets,
         reminders: _reminders,
         onComplete: _completeReminder,
@@ -1083,7 +1101,18 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   }
 
   Future<void> _openAddReminder() async {
-    if (_pets.isEmpty) return;
+    if (_pets.isEmpty) {
+      _showProductMessage('Cadastre um pet antes de criar uma rotina.');
+      return;
+    }
+    if (!_profile.productPlan.canAddReminder(_reminders.length)) {
+      _showUpgradePrompt(
+        title: 'Limite do AuMiau Free Offline',
+        message:
+            'O Free Offline permite uma rotina. Crie uma conta para usar o AuMiau Family com múltiplos cuidados e sincronização.',
+      );
+      return;
+    }
     final titleController = TextEditingController();
     var selectedPet = _pets.first;
     var category = 'Rotina';
@@ -1223,6 +1252,14 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   }
 
   Future<void> _openAddPet() async {
+    if (!_profile.productPlan.canAddPet(_pets.length)) {
+      _showUpgradePrompt(
+        title: 'Mais pets no AuMiau Family',
+        message:
+            'O AuMiau Free Offline permite cadastrar um pet. Crie uma conta para continuar cuidando de toda a família.',
+      );
+      return;
+    }
     final nameController = TextEditingController();
     var species = 'Cão';
     await showDialog<void>(
@@ -1287,6 +1324,36 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       ),
     );
     nameController.dispose();
+  }
+
+  void _showProductMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _showUpgradePrompt({required String title, required String message}) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Agora não'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _openAuth(_AuthScreen.register);
+            },
+            child: const Text('Criar conta'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _openVaccineWallet(Pet pet) async {
@@ -1647,6 +1714,621 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     );
   }
 
+  Future<void> _openAddressEditor() async {
+    final session = await _sessionStore.read();
+    if (session == null) {
+      _showProductMessage(
+        'Crie uma conta Family para cadastrar endereço e localização.',
+      );
+      return;
+    }
+    Map<String, dynamic>? existing;
+    try {
+      existing = await _syncGateway.loadAccountAddress(
+        accessToken: session.accessToken,
+      );
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(error.message);
+      return;
+    }
+    if (!mounted) return;
+
+    final fields = <String, TextEditingController>{
+      'country': TextEditingController(
+        text: existing?['country'] as String? ?? 'Brasil',
+      ),
+      'state': TextEditingController(text: existing?['state'] as String? ?? ''),
+      'city': TextEditingController(text: existing?['city'] as String? ?? ''),
+      'postalCode': TextEditingController(
+        text: existing?['postalCode'] as String? ?? '',
+      ),
+      'street': TextEditingController(
+        text: existing?['street'] as String? ?? '',
+      ),
+      'number': TextEditingController(
+        text: existing?['number'] as String? ?? '',
+      ),
+      'complement': TextEditingController(
+        text: existing?['complement'] as String? ?? '',
+      ),
+      'neighborhood': TextEditingController(
+        text: existing?['neighborhood'] as String? ?? '',
+      ),
+      'reference': TextEditingController(
+        text: existing?['reference'] as String? ?? '',
+      ),
+      'latitude': TextEditingController(
+        text: existing?['latitude']?.toString() ?? '',
+      ),
+      'longitude': TextEditingController(
+        text: existing?['longitude']?.toString() ?? '',
+      ),
+      'accuracy': TextEditingController(
+        text: existing?['accuracy']?.toString() ?? '',
+      ),
+    };
+    var allowVetVisit = existing?['allowVetVisit'] == true;
+    var busy = false;
+    var locating = false;
+    var locationSource = existing?['source'] as String? ?? 'manual';
+
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Endereço e localização'),
+            content: SizedBox(
+              width: 520,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Informe o endereço para comunicação. As coordenadas são opcionais e poderão ser usadas em uma futura solicitação de visita veterinária.',
+                        style: TextStyle(color: _muted, height: 1.35),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    _addressField(fields['country']!, 'País'),
+                    _addressField(fields['state']!, 'Estado'),
+                    _addressField(fields['city']!, 'Cidade'),
+                    _addressField(fields['postalCode']!, 'CEP/código postal'),
+                    _addressField(fields['street']!, 'Rua/avenida'),
+                    _addressField(fields['number']!, 'Número'),
+                    _addressField(
+                      fields['complement']!,
+                      'Complemento (opcional)',
+                    ),
+                    _addressField(fields['neighborhood']!, 'Bairro (opcional)'),
+                    _addressField(
+                      fields['reference']!,
+                      'Ponto de referência (opcional)',
+                    ),
+                    const SizedBox(height: 6),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'GPS opcional (latitude, longitude e precisão em metros)',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: _ink,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: busy || locating
+                            ? null
+                            : () async {
+                                setDialogState(() => locating = true);
+                                try {
+                                  if (!await Geolocator.isLocationServiceEnabled()) {
+                                    _showProductMessage(
+                                      'Ative a localização do aparelho para usar o GPS.',
+                                    );
+                                    return;
+                                  }
+                                  var permission =
+                                      await Geolocator.checkPermission();
+                                  if (permission == LocationPermission.denied) {
+                                    permission =
+                                        await Geolocator.requestPermission();
+                                  }
+                                  if (permission == LocationPermission.denied ||
+                                      permission ==
+                                          LocationPermission.deniedForever) {
+                                    _showProductMessage(
+                                      'Permissão de localização não concedida. Você pode informar o endereço manualmente.',
+                                    );
+                                    return;
+                                  }
+                                  final position =
+                                      await Geolocator.getCurrentPosition(
+                                        locationSettings:
+                                            const LocationSettings(
+                                              accuracy: LocationAccuracy.high,
+                                            ),
+                                      );
+                                  fields['latitude']!.text = position.latitude
+                                      .toStringAsFixed(7);
+                                  fields['longitude']!.text = position.longitude
+                                      .toStringAsFixed(7);
+                                  fields['accuracy']!.text = position.accuracy
+                                      .toStringAsFixed(1);
+                                  locationSource = 'device';
+                                  _showProductMessage(
+                                    'Localização atual preenchida. Confira o endereço antes de salvar.',
+                                  );
+                                } catch (_) {
+                                  _showProductMessage(
+                                    'Não foi possível obter a localização atual.',
+                                  );
+                                } finally {
+                                  if (context.mounted) {
+                                    setDialogState(() => locating = false);
+                                  }
+                                }
+                              },
+                        icon: Icon(
+                          locating ? Icons.sync : Icons.my_location_outlined,
+                        ),
+                        label: Text(
+                          locating
+                              ? 'Obtendo localização...'
+                              : 'Usar localização atual',
+                        ),
+                      ),
+                    ),
+                    _addressField(
+                      fields['latitude']!,
+                      'Latitude',
+                      keyboardType: TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                    ),
+                    _addressField(
+                      fields['longitude']!,
+                      'Longitude',
+                      keyboardType: TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                    ),
+                    _addressField(
+                      fields['accuracy']!,
+                      'Precisão em metros (opcional)',
+                      keyboardType: TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                    ),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      value: allowVetVisit,
+                      onChanged: busy
+                          ? null
+                          : (value) =>
+                                setDialogState(() => allowVetVisit = value),
+                      title: const Text(
+                        'Aceito avaliar atendimento veterinário no local',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: busy
+                    ? null
+                    : () async {
+                        final requiredKeys = [
+                          'country',
+                          'state',
+                          'city',
+                          'postalCode',
+                          'street',
+                          'number',
+                        ];
+                        if (requiredKeys.any(
+                          (key) => fields[key]!.text.trim().isEmpty,
+                        )) {
+                          _showProductMessage(
+                            'Preencha país, estado, cidade, CEP, rua e número.',
+                          );
+                          return;
+                        }
+                        setDialogState(() => busy = true);
+                        try {
+                          await _syncGateway.saveAccountAddress(
+                            accessToken: session.accessToken,
+                            address: {
+                              'country': fields['country']!.text.trim(),
+                              'state': fields['state']!.text.trim(),
+                              'city': fields['city']!.text.trim(),
+                              'postalCode': fields['postalCode']!.text.trim(),
+                              'street': fields['street']!.text.trim(),
+                              'number': fields['number']!.text.trim(),
+                              'complement': fields['complement']!.text.trim(),
+                              'neighborhood': fields['neighborhood']!.text
+                                  .trim(),
+                              'reference': fields['reference']!.text.trim(),
+                              'latitude': double.tryParse(
+                                fields['latitude']!.text.trim(),
+                              ),
+                              'longitude': double.tryParse(
+                                fields['longitude']!.text.trim(),
+                              ),
+                              'accuracy': double.tryParse(
+                                fields['accuracy']!.text.trim(),
+                              ),
+                              'source': locationSource,
+                              'allowVetVisit': allowVetVisit,
+                              'consentVersion': 'v1.0',
+                            },
+                          );
+                          if (dialogContext.mounted) {
+                            Navigator.pop(dialogContext);
+                          }
+                          _showProductMessage('Endereço salvo com segurança.');
+                        } on SyncGatewayException catch (error) {
+                          if (context.mounted) {
+                            setDialogState(() => busy = false);
+                            _showProductMessage(error.message);
+                          }
+                        }
+                      },
+                child: Text(busy ? 'Salvando...' : 'Salvar endereço'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      for (final controller in fields.values) {
+        controller.dispose();
+      }
+    }
+  }
+
+  Future<void> _showSubscriptionOptions() async {
+    Map<String, dynamic> catalog = const {};
+    try {
+      catalog = await _syncGateway.loadBillingCatalog();
+    } catch (_) {
+      // Os preços de referência abaixo mantêm a tela útil durante o modo offline.
+    }
+    if (!mounted) return;
+    final products = catalog['products'] is List
+        ? (catalog['products'] as List).whereType<Map>().toList()
+        : const <Map>[];
+    String priceFor(String productId, String fallback) {
+      for (final product in products) {
+        if (product['productId'] == productId) {
+          final price = product['referencePriceEur'];
+          if (price is String) return '€ $price';
+        }
+      }
+      return fallback;
+    }
+
+    double pixAmountFor(String productId, double fallback) {
+      for (final product in products) {
+        if (product['productId'] == productId) {
+          final amount = product['pixAmountBrl'];
+          if (amount is num) return amount.toDouble();
+          return double.tryParse(amount.toString().replaceAll(',', '.')) ??
+              fallback;
+        }
+      }
+      return fallback;
+    }
+
+    String pixPriceFor(String productId, double fallback) {
+      final amount = pixAmountFor(productId, fallback);
+      return 'R\$ ${amount.toStringAsFixed(2).replaceAll('.', ',')}';
+    }
+
+    void openPix(
+      BuildContext dialogContext,
+      String productId,
+      String planName,
+      double fallback,
+    ) {
+      final amount = pixAmountFor(productId, fallback);
+      Navigator.pop(dialogContext);
+      Future<void>.delayed(Duration.zero, () {
+        if (mounted) {
+          _showPixPayment(
+            productId: productId,
+            planName: planName,
+            amount: amount,
+          );
+        }
+      });
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Conheça o AuMiau Family'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Mais pets, sincronização e recursos para cuidar da família inteira.',
+              style: TextStyle(color: _muted, height: 1.35),
+            ),
+            const SizedBox(height: 14),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.calendar_month_outlined,
+                color: _forest,
+              ),
+              title: const Text('Plano mensal'),
+              subtitle: const Text('Pagamento seguro via Mercado Pago'),
+              trailing: Text(
+                '${priceFor('family_monthly', '€ 0,99')}\n'
+                '${pixPriceFor('family_monthly', 5.76)}',
+                textAlign: TextAlign.end,
+              ),
+              onTap: () => openPix(
+                dialogContext,
+                'family_monthly',
+                'Family mensal',
+                5.76,
+              ),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.event_available_outlined,
+                color: _forest,
+              ),
+              title: const Text('Plano anual'),
+              subtitle: const Text('Pagamento seguro via Mercado Pago'),
+              trailing: Text(
+                '${priceFor('family_yearly', '€ 8,00')}\n'
+                '${pixPriceFor('family_yearly', 46.55)}',
+                textAlign: TextAlign.end,
+              ),
+              onTap: () =>
+                  openPix(dialogContext, 'family_yearly', 'Family anual', 8.00),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Para assinar, entre ou crie uma conta. O Mercado Pago confirmará o pagamento e liberará o Family automaticamente.',
+              style: TextStyle(fontSize: 12, color: _muted, height: 1.35),
+            ),
+          ],
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Entendi'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showPixPayment({
+    required String productId,
+    required String planName,
+    required double amount,
+  }) async {
+    if (_accessToken == null) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Conta necessária'),
+          content: const Text(
+            'Para assinar o AuMiau Family, entre ou crie uma conta. '
+            'Assim o pagamento será associado a você e o acesso será liberado automaticamente.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _openAuth(_AuthScreen.login);
+              },
+              child: const Text('Entrar'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _openAuth(_AuthScreen.register);
+              },
+              child: const Text('Criar conta'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    late final Map<String, dynamic> onlineOrder;
+    try {
+      onlineOrder = await _syncGateway.createBillingOrder(
+        accessToken: _accessToken!,
+        productId: productId,
+      );
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(
+        'Não foi possível conectar ao Mercado Pago agora. ${error.message}',
+      );
+      return;
+    }
+    if (!mounted) return;
+    final pixCode = onlineOrder['qrCode'];
+    final orderId = onlineOrder['orderId'];
+    if (pixCode is! String || pixCode.isEmpty || orderId is! String) {
+      _showProductMessage(
+        'O Mercado Pago não retornou uma cobrança válida. Tente novamente.',
+      );
+      return;
+    }
+    final paidAmount = onlineOrder['amountBrl'] is num
+        ? (onlineOrder['amountBrl'] as num).toDouble()
+        : amount;
+    final amountLabel =
+        'R\$ ${paidAmount.toStringAsFixed(2).replaceAll('.', ',')}';
+    final ticketUrl = onlineOrder['ticketUrl'] is String
+        ? onlineOrder['ticketUrl'] as String
+        : null;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Pix - $planName'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Valor em Reais: $amountLabel',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  color: _forest,
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Escaneie o QR Code usando o aplicativo do seu banco.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: 230,
+                height: 230,
+                child: QrImageView(
+                  data: pixCode,
+                  version: QrVersions.auto,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Pagamento processado pelo Mercado Pago.\n'
+                  'Este QR Code é exclusivo para esta cobrança.',
+                  style: TextStyle(fontSize: 12, color: _muted),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: _openWhatsAppSupport,
+                  icon: const Icon(Icons.chat_outlined, size: 18),
+                  label: const Text('+55 92 99158-0637 - WhatsApp'),
+                ),
+              ),
+              const SizedBox(height: 10),
+              SelectableText(
+                pixCode,
+                style: const TextStyle(fontSize: 9, color: _muted),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                    'Após o pagamento, o Mercado Pago notificará o servidor. O Family será liberado depois da confirmação do pagamento.',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: _danger,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          if (ticketUrl != null)
+            TextButton(
+              onPressed: () => launchUrl(
+                Uri.parse(ticketUrl),
+                mode: LaunchMode.externalApplication,
+              ),
+              child: const Text('Abrir pagamento'),
+            ),
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: pixCode));
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              _showProductMessage('Pix Copia e Cola copiado.');
+            },
+            child: const Text('Copiar código'),
+          ),
+          TextButton(
+            onPressed: () async {
+              try {
+                final updated = await _syncGateway.loadBillingOrder(
+                  accessToken: _accessToken!,
+                  orderId: orderId,
+                );
+                if (updated['paid'] == true) {
+                  await _refreshAccountEntitlement();
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                  _showProductMessage(
+                    'Pagamento confirmado. Family liberado.',
+                  );
+                } else {
+                  _showProductMessage('Pagamento ainda não confirmado.');
+                }
+              } on SyncGatewayException catch (error) {
+                _showProductMessage(error.message);
+              }
+            },
+            child: const Text('Atualizar status'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Fechar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openWhatsAppSupport() async {
+    const phone = '5592991580637';
+    final message = Uri.encodeComponent(
+      'Olá! Preciso de ajuda com o pagamento do AuMiau Family.',
+    );
+    final whatsappUri = Uri.parse('https://wa.me/$phone?text=$message');
+    final opened = await launchUrl(
+      whatsappUri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && mounted) {
+      _showProductMessage('Não foi possível abrir o WhatsApp.');
+    }
+  }
+
+  Widget _addressField(
+    TextEditingController controller,
+    String label, {
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        decoration: InputDecoration(labelText: label),
+      ),
+    );
+  }
+
   Future<void> _restoreSession() async {
     final session = await _sessionStore.read();
     if (!mounted) return;
@@ -1658,6 +2340,46 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       _accessToken = session.accessToken;
       _showAuthGate = false;
     });
+    await _loadData();
+    await _refreshAccountEntitlement();
+  }
+
+  Future<void> _refreshAccountEntitlement() async {
+    final accessToken = _accessToken;
+    if (accessToken == null) return;
+    try {
+      final status = await _syncGateway.loadAccountStatus(
+        accessToken: accessToken,
+      );
+      final entitlement = status['entitlement'];
+      final entitlementMap = entitlement is Map
+          ? Map<String, dynamic>.from(entitlement)
+          : const <String, dynamic>{};
+      final validUntil = entitlementMap['validUntil'] is String
+          ? DateTime.tryParse(entitlementMap['validUntil'] as String)
+          : null;
+      final active =
+          entitlementMap['status'] == 'active' &&
+          (validUntil == null || validUntil.isAfter(DateTime.now().toUtc()));
+      final profile = await _database.loadProfile();
+      if (profile == null) return;
+      await _database.saveProfile(
+        name: profile.name,
+        email: profile.email,
+        plan: active
+            ? ProductCatalog.family.code
+            : ProductCatalog.freeOffline.code,
+      );
+      if (!mounted) return;
+      setState(() {
+        _profile.plan = active
+            ? ProductCatalog.family.code
+            : ProductCatalog.freeOffline.code;
+        _profile.familyEnabled = active;
+      });
+    } on SyncGatewayException {
+      // O app continua offline com o último estado local conhecido.
+    }
   }
 
   void _openAuth(_AuthScreen screen) {
@@ -1684,9 +2406,16 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       accessToken: session.accessToken,
       refreshToken: session.refreshToken,
     );
-    if (name != null && name.trim().isNotEmpty) {
-      await _database.saveProfile(name: name.trim(), email: email);
-    }
+    final existingProfile = await _database.loadProfile();
+    await _database.saveProfile(
+      name: name?.trim().isNotEmpty == true
+          ? name!.trim()
+          : (existingProfile?.name.trim().isNotEmpty == true
+                ? existingProfile!.name
+                : email),
+      email: email,
+      plan: ProductCatalog.family.code,
+    );
     if (!mounted) return;
     setState(() {
       _showAuthGate = false;
@@ -1694,6 +2423,12 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       _selectedIndex = 0;
     });
     await _loadData();
+    await _refreshAccountEntitlement();
+    if (name != null && mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_openAddressEditor());
+      });
+    }
   }
 
   Future<void> _loginFromAuth({
@@ -1995,6 +2730,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     final pages = [
       TodayPage(
         today: _today,
+        profileName: _profile.name,
         pets: _pets,
         reminders: _reminders,
         onComplete: _completePersistentReminder,
@@ -2018,6 +2754,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       ProfilePage(
         profile: _profile,
         petCount: _pets.length,
+        onOpenSubscription: _showSubscriptionOptions,
+        onEditAddress: _profile.isFamily ? _openAddressEditor : null,
         pendingSyncCount: _pendingSyncCount,
         onEdit: _editProfile,
         onSaveBackup: _saveBackup,
@@ -2327,13 +3065,13 @@ class _AuthWelcomeView extends StatelessWidget {
         TextButton(
           onPressed: onOffline,
           child: const Text(
-            'Continuar sem conta',
+            'Usar aplicativo offline',
             style: TextStyle(color: _authPinkDark, fontWeight: FontWeight.w700),
           ),
         ),
         const SizedBox(height: 6),
         const Text(
-          'Seus dados continuam disponíveis offline no aparelho.',
+          'AuMiau Free Offline: seus dados ficam somente neste aparelho.',
           textAlign: TextAlign.center,
           style: TextStyle(color: _muted, fontSize: 12),
         ),
@@ -2952,6 +3690,7 @@ class TodayPage extends StatelessWidget {
   const TodayPage({
     super.key,
     required this.today,
+    required this.profileName,
     required this.pets,
     required this.reminders,
     required this.onComplete,
@@ -2961,6 +3700,7 @@ class TodayPage extends StatelessWidget {
   });
 
   final DateTime today;
+  final String profileName;
   final List<Pet> pets;
   final List<Reminder> reminders;
   final void Function(Reminder) onComplete;
@@ -2991,7 +3731,9 @@ class TodayPage extends StatelessWidget {
         _TopHeader(today: today),
         const SizedBox(height: 22),
         Text(
-          'Oi, Cezar! 👋',
+          profileName.trim().isEmpty
+              ? 'Cuide de quem ama'
+              : 'Oi, ${profileName.trim()}! 👋',
           style: Theme.of(context).textTheme.headlineMedium?.copyWith(
             fontWeight: FontWeight.w800,
             color: _ink,
@@ -3569,6 +4311,8 @@ class ProfilePage extends StatelessWidget {
     super.key,
     this.profile,
     this.petCount = 2,
+    this.onOpenSubscription,
+    this.onEditAddress,
     this.pendingSyncCount = 0,
     this.onEdit,
     this.onSaveBackup,
@@ -3581,6 +4325,8 @@ class ProfilePage extends StatelessWidget {
 
   final LocalProfile? profile;
   final int petCount;
+  final VoidCallback? onOpenSubscription;
+  final VoidCallback? onEditAddress;
   final int pendingSyncCount;
   final VoidCallback? onEdit;
   final VoidCallback? onSaveBackup;
@@ -3667,7 +4413,7 @@ class ProfilePage extends StatelessWidget {
                     const Icon(Icons.auto_awesome, color: _mango),
                     const SizedBox(width: 8),
                     Text(
-                      'Plano gratuito',
+                      currentProfile.productPlan.displayName,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
@@ -3677,23 +4423,67 @@ class ProfilePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Você já está cuidando de $petCount pets. Desbloqueie recursos avançados do Plano Família.',
+                  currentProfile.isFreeOffline
+                      ? 'Você está cuidando de $petCount pet. No Family, você poderá cadastrar múltiplos pets e sincronizar seus dados.'
+                      : 'Sua conta está conectada ao AuMiau Family. Seus dados podem ser sincronizados com segurança.',
                   style: TextStyle(color: Colors.white70, height: 1.4),
                 ),
                 const SizedBox(height: 14),
                 FilledButton(
-                  onPressed: () => _showComingSoon(context),
+                  onPressed:
+                      onOpenSubscription ?? () => _showComingSoon(context),
                   style: FilledButton.styleFrom(
                     backgroundColor: _mango,
                     foregroundColor: _forestDark,
                   ),
-                  child: const Text('Conhecer Plano Família'),
+                  child: Text(
+                    currentProfile.isFreeOffline
+                        ? 'Conhecer Plano Família'
+                        : 'Gerenciar assinatura',
+                  ),
                 ),
               ],
             ),
           ),
         ),
         const SizedBox(height: 16),
+        if (onEditAddress != null)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.location_on_outlined, color: _forest),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Endereço e localização',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: _ink,
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Cadastre o endereço manualmente. O GPS é opcional e só será usado com seu consentimento.',
+                    style: TextStyle(color: _muted, height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: onEditAddress,
+                    icon: const Icon(Icons.edit_location_alt_outlined),
+                    label: const Text('Cadastrar ou editar endereço'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (onEditAddress != null) const SizedBox(height: 16),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(18),

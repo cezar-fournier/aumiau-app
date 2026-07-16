@@ -53,7 +53,7 @@ class UserProfiles extends Table {
   IntColumn get id => integer().autoIncrement()();
   TextColumn get name => text().withLength(min: 1, max: 100)();
   TextColumn get email => text().withLength(min: 3, max: 180)();
-  TextColumn get plan => text().withDefault(const Constant('Gratuito'))();
+  TextColumn get plan => text().withDefault(const Constant('free_offline'))();
   DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
 }
 
@@ -78,7 +78,7 @@ class SyncOperations extends Table {
   ],
 )
 final class AppDatabase extends _$AppDatabase {
-  AppDatabase({QueryExecutor? executor})
+  AppDatabase({QueryExecutor? executor, this.seedDemoData = false})
     : super(
         executor ??
             driftDatabase(
@@ -90,7 +90,9 @@ final class AppDatabase extends _$AppDatabase {
             ),
       );
 
-  AppDatabase.fromExecutor(super.executor);
+  AppDatabase.fromExecutor(super.executor, {this.seedDemoData = true});
+
+  final bool seedDemoData;
 
   @override
   int get schemaVersion => 3;
@@ -99,7 +101,7 @@ final class AppDatabase extends _$AppDatabase {
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) async {
       await m.createAll();
-      await _seed();
+      if (seedDemoData) await _seed();
     },
     onUpgrade: (m, from, to) async {
       if (from < 2) {
@@ -125,12 +127,14 @@ final class AppDatabase extends _$AppDatabase {
       if (from < 3) {
         await m.createTable(userProfiles);
         await m.createTable(syncOperations);
-        await into(userProfiles).insert(
-          UserProfilesCompanion.insert(
-            name: 'Cezar Fournier',
-            email: 'cezar@exemplo.com',
-          ),
-        );
+        if (seedDemoData) {
+          await into(userProfiles).insert(
+            UserProfilesCompanion.insert(
+              name: 'Cezar Fournier',
+              email: 'cezar@exemplo.com',
+            ),
+          );
+        }
       }
     },
   );
@@ -271,24 +275,34 @@ final class AppDatabase extends _$AppDatabase {
   Future<void> markSyncOperationsAsSynced(Iterable<int> ids) async {
     final operationIds = ids.toList();
     if (operationIds.isEmpty) return;
-    await (update(syncOperations)
-          ..where((row) => row.id.isIn(operationIds)))
+    await (update(syncOperations)..where((row) => row.id.isIn(operationIds)))
         .write(SyncOperationsCompanion(syncedAt: Value(DateTime.now())));
   }
 
-  Future<void> saveProfile({required String name, required String email}) async {
+  Future<void> saveProfile({
+    required String name,
+    required String email,
+    String? plan,
+  }) async {
     final profile = await loadProfile();
     if (profile == null) {
       final id = await into(userProfiles).insert(
-        UserProfilesCompanion.insert(name: name, email: email),
+        UserProfilesCompanion.insert(
+          name: name,
+          email: email,
+          plan: Value(plan ?? 'free_offline'),
+        ),
       );
       await _recordSync('profile', id, 'upsert');
       return;
     }
-    await (update(userProfiles)..where((row) => row.id.equals(profile.id))).write(
+    await (update(
+      userProfiles,
+    )..where((row) => row.id.equals(profile.id))).write(
       UserProfilesCompanion(
         name: Value(name),
         email: Value(email),
+        plan: plan == null ? const Value.absent() : Value(plan),
         updatedAt: Value(DateTime.now()),
       ),
     );
@@ -446,46 +460,62 @@ final class AppDatabase extends _$AppDatabase {
               'plan': profile.plan,
               'updatedAt': profile.updatedAt.toIso8601String(),
             },
-      'pets': databasePets.map((pet) => {
-        'id': pet.id,
-        'name': pet.name,
-        'species': pet.species,
-        'breed': pet.breed,
-        'emoji': pet.emoji,
-        'weight': pet.weight,
-        'allergies': pet.allergies,
-        'createdAt': pet.createdAt.toIso8601String(),
-      }).toList(),
-      'reminders': databaseReminders.map((reminder) => {
-        'id': reminder.id,
-        'title': reminder.title,
-        'petId': reminder.petId,
-        'petName': reminder.petName,
-        'icon': reminder.icon,
-        'category': reminder.category,
-        'dueAt': reminder.dueAt.toIso8601String(),
-        'intervalDays': reminder.intervalDays,
-        'lastCompletedAt': reminder.lastCompletedAt?.toIso8601String(),
-        'createdAt': reminder.createdAt.toIso8601String(),
-      }).toList(),
-      'vaccines': databaseVaccines.map((vaccine) => {
-        'id': vaccine.id,
-        'petId': vaccine.petId,
-        'name': vaccine.name,
-        'appliedAt': vaccine.appliedAt.toIso8601String(),
-        'nextDoseAt': vaccine.nextDoseAt?.toIso8601String(),
-        'clinicName': vaccine.clinicName,
-        'batchNumber': vaccine.batchNumber,
-        'createdAt': vaccine.createdAt.toIso8601String(),
-      }).toList(),
-      'weights': databaseWeights.map((weight) => {
-        'id': weight.id,
-        'petId': weight.petId,
-        'weight': weight.weight,
-        'measuredAt': weight.measuredAt.toIso8601String(),
-        'note': weight.note,
-        'createdAt': weight.createdAt.toIso8601String(),
-      }).toList(),
+      'pets': databasePets
+          .map(
+            (pet) => {
+              'id': pet.id,
+              'name': pet.name,
+              'species': pet.species,
+              'breed': pet.breed,
+              'emoji': pet.emoji,
+              'weight': pet.weight,
+              'allergies': pet.allergies,
+              'createdAt': pet.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'reminders': databaseReminders
+          .map(
+            (reminder) => {
+              'id': reminder.id,
+              'title': reminder.title,
+              'petId': reminder.petId,
+              'petName': reminder.petName,
+              'icon': reminder.icon,
+              'category': reminder.category,
+              'dueAt': reminder.dueAt.toIso8601String(),
+              'intervalDays': reminder.intervalDays,
+              'lastCompletedAt': reminder.lastCompletedAt?.toIso8601String(),
+              'createdAt': reminder.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'vaccines': databaseVaccines
+          .map(
+            (vaccine) => {
+              'id': vaccine.id,
+              'petId': vaccine.petId,
+              'name': vaccine.name,
+              'appliedAt': vaccine.appliedAt.toIso8601String(),
+              'nextDoseAt': vaccine.nextDoseAt?.toIso8601String(),
+              'clinicName': vaccine.clinicName,
+              'batchNumber': vaccine.batchNumber,
+              'createdAt': vaccine.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'weights': databaseWeights
+          .map(
+            (weight) => {
+              'id': weight.id,
+              'petId': weight.petId,
+              'weight': weight.weight,
+              'measuredAt': weight.measuredAt.toIso8601String(),
+              'note': weight.note,
+              'createdAt': weight.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
     };
   }
 
@@ -515,7 +545,7 @@ final class AppDatabase extends _$AppDatabase {
             id: Value(_int(profileData['id'])),
             name: _string(profileData['name']),
             email: _string(profileData['email']),
-            plan: Value(_string(profileData['plan'], fallback: 'Gratuito')),
+            plan: Value(_string(profileData['plan'], fallback: 'free_offline')),
             updatedAt: Value(_date(profileData['updatedAt'])),
           ),
         );
@@ -554,7 +584,9 @@ final class AppDatabase extends _$AppDatabase {
                   ),
                   dueAt: _date(reminder['dueAt']),
                   intervalDays: Value(_int(reminder['intervalDays'])),
-                  lastCompletedAt: Value(_nullableDate(reminder['lastCompletedAt'])),
+                  lastCompletedAt: Value(
+                    _nullableDate(reminder['lastCompletedAt']),
+                  ),
                   createdAt: Value(_date(reminder['createdAt'])),
                 ),
               )
@@ -618,9 +650,7 @@ List<Map<String, dynamic>> _mapList(Object? value) {
   if (value is! List) {
     throw const FormatException('Backup sem uma lista de dados válida.');
   }
-  return value
-      .map((item) => Map<String, dynamic>.from(item as Map))
-      .toList();
+  return value.map((item) => Map<String, dynamic>.from(item as Map)).toList();
 }
 
 String _string(Object? value, {String fallback = ''}) =>

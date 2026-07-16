@@ -2073,7 +2073,7 @@ class $UserProfilesTable extends UserProfiles
     false,
     type: DriftSqlType.string,
     requiredDuringInsert: false,
-    defaultValue: const Constant('Gratuito'),
+    defaultValue: const Constant('free_offline'),
   );
   static const VerificationMeta _updatedAtMeta = const VerificationMeta(
     'updatedAt',

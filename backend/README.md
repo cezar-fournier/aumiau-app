@@ -45,6 +45,28 @@ anteriores são revogadas.
 
 O arquivo `.env` contém credenciais e não deve ser versionado.
 
+## Mercado Pago e Pix Family
+
+O backend cria uma cobrança Pix individual em `POST /billing/orders`, usando o
+plano informado pelo aplicativo e o valor definido no servidor. O QR Code
+retornado pelo Mercado Pago é exclusivo para o pedido e não deve ser
+substituído por um QR fixo.
+
+Configure no `.env` da VPS:
+
+```bash
+MERCADOPAGO_ACCESS_TOKEN=APP_USR_...
+MERCADOPAGO_WEBHOOK_SECRET=chave-gerada-em-Webhooks
+MERCADOPAGO_ENVIRONMENT=test
+MERCADOPAGO_NOTIFICATION_URL=https://aumiau.app.br/webhooks/mercadopago
+```
+
+No painel Mercado Pago, configure o evento **Order** para a URL HTTPS acima.
+O endpoint valida `x-signature`, consulta a order no Mercado Pago e somente
+depois cria a assinatura e ativa o entitlement `family_access`. O token e a
+chave do webhook nunca devem ser colocados no APK, no Git ou enviados pelo
+chat.
+
 ## Cadastro de usuários
 
 O aplicativo oferece cadastro público em `POST /auth/register`. O usuário informa

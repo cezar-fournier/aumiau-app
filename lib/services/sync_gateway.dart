@@ -187,6 +187,58 @@ class HttpSyncGateway implements SyncGateway {
     await _post('auth/logout', body: const {}, accessToken: accessToken);
   }
 
+  Future<Map<String, dynamic>> loadAccountStatus({
+    required String accessToken,
+  }) async {
+    final response = await _get('account/status', accessToken: accessToken);
+    return _decodeObject(response);
+  }
+
+  Future<Map<String, dynamic>?> loadAccountAddress({
+    required String accessToken,
+  }) async {
+    final response = await _get('account/address', accessToken: accessToken);
+    final data = _decodeObject(response);
+    return data['address'] is Map
+        ? Map<String, dynamic>.from(data['address'] as Map)
+        : null;
+  }
+
+  Future<void> saveAccountAddress({
+    required String accessToken,
+    required Map<String, dynamic> address,
+  }) async {
+    await _put('account/address', body: address, accessToken: accessToken);
+  }
+
+  Future<Map<String, dynamic>> loadBillingCatalog() async {
+    final response = await _get('billing/catalog');
+    return _decodeObject(response);
+  }
+
+  Future<Map<String, dynamic>> createBillingOrder({
+    required String accessToken,
+    required String productId,
+  }) async {
+    final response = await _post(
+      'billing/orders',
+      body: {'productId': productId},
+      accessToken: accessToken,
+    );
+    return _decodeObject(response);
+  }
+
+  Future<Map<String, dynamic>> loadBillingOrder({
+    required String accessToken,
+    required String orderId,
+  }) async {
+    final response = await _get(
+      'billing/orders/${Uri.encodeComponent(orderId)}',
+      accessToken: accessToken,
+    );
+    return _decodeObject(response);
+  }
+
   @override
   Future<SyncBatchAck> pushBatch({
     required Map<String, dynamic> payload,
@@ -245,6 +297,57 @@ class HttpSyncGateway implements SyncGateway {
     try {
       final response = await _client
           .post(baseUri.resolve(path), headers: headers, body: jsonEncode(body))
+          .timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw SyncGatewayException(
+          _errorMessage(response),
+          statusCode: response.statusCode,
+        );
+      }
+      return response;
+    } on SyncGatewayException {
+      rethrow;
+    } catch (error) {
+      throw SyncGatewayException('Falha de comunicação com o servidor: $error');
+    }
+  }
+
+  Future<http.Response> _get(String path, {String? accessToken}) async {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+    };
+    try {
+      final response = await _client
+          .get(baseUri.resolve(path), headers: headers)
+          .timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw SyncGatewayException(
+          _errorMessage(response),
+          statusCode: response.statusCode,
+        );
+      }
+      return response;
+    } on SyncGatewayException {
+      rethrow;
+    } catch (error) {
+      throw SyncGatewayException('Falha de comunicação com o servidor: $error');
+    }
+  }
+
+  Future<http.Response> _put(
+    String path, {
+    required Map<String, dynamic> body,
+    String? accessToken,
+  }) async {
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+    };
+    try {
+      final response = await _client
+          .put(baseUri.resolve(path), headers: headers, body: jsonEncode(body))
           .timeout(timeout);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw SyncGatewayException(

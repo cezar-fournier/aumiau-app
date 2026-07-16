@@ -1,6 +1,8 @@
 import 'package:aumiau_app/main.dart';
 import 'package:aumiau_app/data/app_database.dart';
+import 'package:aumiau_app/domain/product_plan.dart';
 import 'package:aumiau_app/services/pdf_service.dart';
+import 'package:aumiau_app/services/pix_service.dart';
 import 'package:aumiau_app/services/sync_service.dart';
 import 'package:aumiau_app/services/sync_gateway.dart';
 import 'package:drift/drift.dart';
@@ -11,6 +13,44 @@ import 'package:aumiau_app/services/update_service.dart';
 
 void main() {
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+
+  test('catálogo comercial aplica limites do Free Offline', () {
+    final plan = ProductCatalog.freeOffline;
+
+    expect(plan.isFreeOffline, isTrue);
+    expect(plan.canAddPet(0), isTrue);
+    expect(plan.canAddPet(1), isFalse);
+    expect(plan.canAddReminder(0), isTrue);
+    expect(plan.canAddReminder(1), isFalse);
+    expect(ProductCatalog.fromCode('family_monthly').isFamily, isTrue);
+  });
+
+  test('gera payload Pix com chave CNPJ e CRC', () {
+    final payload = PixService.buildPayload(
+      amount: 8,
+      txid: 'AUMIAUY1234567890',
+    );
+
+    expect(payload, startsWith('000201'));
+    expect(payload, contains(PixService.merchantKey));
+    expect(payload, contains('C A INFORMATICA'));
+    expect(
+      payload.substring(payload.length - 4),
+      matches(RegExp(r'^[0-9A-F]{4}$')),
+    );
+  });
+
+  test('banco comercial inicia vazio sem seed demonstrativo', () async {
+    final database = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+
+    expect(await database.loadPets(), isEmpty);
+    expect(await database.loadReminders(), isEmpty);
+    expect(await database.loadProfile(), equals(null));
+    await database.close();
+  });
 
   test('salva pet, vacina e reagendamento no banco local', () async {
     final database = AppDatabase.fromExecutor(NativeDatabase.memory());
@@ -183,12 +223,12 @@ void main() {
     // estável de renderização em vez de esperar que a tela fique settled.
     await tester.pump(const Duration(milliseconds: 250));
 
-    expect(find.text('Continuar sem conta'), findsOneWidget);
-    await tester.ensureVisible(find.text('Continuar sem conta'));
-    await tester.tap(find.text('Continuar sem conta'));
+    expect(find.text('Usar aplicativo offline'), findsOneWidget);
+    await tester.ensureVisible(find.text('Usar aplicativo offline'));
+    await tester.tap(find.text('Usar aplicativo offline'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Oi, Cezar! 👋'), findsOneWidget);
+    expect(find.text('Oi, Cezar Fournier! 👋'), findsOneWidget);
     expect(find.text('Cuidados de hoje'), findsOneWidget);
     expect(find.text('Vermífugo do Thor'), findsOneWidget);
 
