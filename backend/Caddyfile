@@ -1,0 +1,12 @@
+{
+    email contato@aumiau.app.br
+}
+
+{$AUMIAU_DOMAIN} {
+    encode gzip
+    reverse_proxy api:8000
+}
+
+mail.aumiau.app.br {
+    respond 404
+}
