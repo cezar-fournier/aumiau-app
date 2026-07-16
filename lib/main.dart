@@ -2129,6 +2129,11 @@ class _AuthFlowPage extends StatelessWidget {
         ),
         child: Stack(
           children: [
+            const Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(painter: _PawPrintPatternPainter()),
+              ),
+            ),
             const Positioned(
               top: -80,
               left: -70,
@@ -2202,6 +2207,83 @@ class _AuthBubble extends StatelessWidget {
     height: size,
     decoration: BoxDecoration(shape: BoxShape.circle, color: color),
   );
+}
+
+class _PawPrintPatternPainter extends CustomPainter {
+  const _PawPrintPatternPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const pawSpacingX = 104.0;
+    const pawSpacingY = 98.0;
+    const rotations = <double>[-.16, .08, .18, -.08];
+
+    var row = 0;
+    for (var y = 38.0; y < size.height + pawSpacingY; y += pawSpacingY) {
+      var column = 0;
+      final offsetX = row.isEven ? 8.0 : 58.0;
+      for (var x = offsetX; x < size.width + pawSpacingX; x += pawSpacingX) {
+        final rotation = rotations[(row + column) % rotations.length];
+        final scale = (row + column).isEven ? .72 : .6;
+        _drawPaw(
+          canvas,
+          Offset(x, y),
+          scale,
+          rotation,
+          const Color(0x0D1E4D40),
+        );
+        _drawPaw(
+          canvas,
+          Offset(x - .9, y - 1.2),
+          scale,
+          rotation,
+          const Color(0x2BFFFFFF),
+        );
+        column++;
+      }
+      row++;
+    }
+  }
+
+  void _drawPaw(
+    Canvas canvas,
+    Offset center,
+    double scale,
+    double rotation,
+    Color color,
+  ) {
+    final paint = Paint()..color = color;
+    canvas
+      ..save()
+      ..translate(center.dx, center.dy)
+      ..rotate(rotation)
+      ..scale(scale);
+
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(0, 11), width: 31, height: 24),
+      paint,
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(-19, -3), width: 11, height: 16),
+      paint,
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(-7, -13), width: 11, height: 16),
+      paint,
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(7, -13), width: 11, height: 16),
+      paint,
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(19, -3), width: 11, height: 16),
+      paint,
+    );
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _AuthWelcomeView extends StatelessWidget {
