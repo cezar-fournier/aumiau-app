@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -2009,20 +2010,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     final products = catalog['products'] is List
         ? (catalog['products'] as List).whereType<Map>().toList()
         : const <Map>[];
-    String priceFor(String productId, String fallback) {
-      for (final product in products) {
-        if (product['productId'] == productId) {
-          final price = product['referencePriceEur'];
-          if (price is String) return '€ $price';
-        }
-      }
-      return fallback;
-    }
-
     double pixAmountFor(String productId, double fallback) {
       for (final product in products) {
         if (product['productId'] == productId) {
-          final amount = product['pixAmountBrl'];
+          final amount = product['priceBrl'] ?? product['pixAmountBrl'];
           if (amount is num) return amount.toDouble();
           return double.tryParse(amount.toString().replaceAll(',', '.')) ??
               fallback;
@@ -2077,15 +2068,14 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
               title: const Text('Plano mensal'),
               subtitle: const Text('Pagamento seguro via Mercado Pago'),
               trailing: Text(
-                '${priceFor('family_monthly', '€ 0,99')}\n'
-                '${pixPriceFor('family_monthly', 5.76)}',
+                pixPriceFor('family_monthly', 2.99),
                 textAlign: TextAlign.end,
               ),
               onTap: () => openPix(
                 dialogContext,
                 'family_monthly',
                 'Family mensal',
-                5.76,
+                2.99,
               ),
             ),
             ListTile(
@@ -2097,12 +2087,11 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
               title: const Text('Plano anual'),
               subtitle: const Text('Pagamento seguro via Mercado Pago'),
               trailing: Text(
-                '${priceFor('family_yearly', '€ 8,00')}\n'
-                '${pixPriceFor('family_yearly', 46.55)}',
+                pixPriceFor('family_yearly', 25.00),
                 textAlign: TextAlign.end,
               ),
               onTap: () =>
-                  openPix(dialogContext, 'family_yearly', 'Family anual', 8.00),
+                  openPix(dialogContext, 'family_yearly', 'Family anual', 25.00),
             ),
             const SizedBox(height: 8),
             const Text(
@@ -2182,6 +2171,9 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         : amount;
     final amountLabel =
         'R\$ ${paidAmount.toStringAsFixed(2).replaceAll('.', ',')}';
+    final qrCodeBase64 = onlineOrder['qrCodeBase64'] is String
+        ? onlineOrder['qrCodeBase64'] as String
+        : null;
     final ticketUrl = onlineOrder['ticketUrl'] is String
         ? onlineOrder['ticketUrl'] as String
         : null;
@@ -2210,11 +2202,21 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
               SizedBox(
                 width: 230,
                 height: 230,
-                child: QrImageView(
-                  data: pixCode,
-                  version: QrVersions.auto,
-                  backgroundColor: Colors.white,
-                ),
+                 child: qrCodeBase64 != null
+                     ? Image.memory(
+                         base64Decode(qrCodeBase64),
+                         fit: BoxFit.contain,
+                         errorBuilder: (context, error, stackTrace) => QrImageView(
+                           data: pixCode,
+                           version: QrVersions.auto,
+                           backgroundColor: Colors.white,
+                         ),
+                       )
+                     : QrImageView(
+                         data: pixCode,
+                         version: QrVersions.auto,
+                         backgroundColor: Colors.white,
+                       ),
               ),
               const SizedBox(height: 12),
               const Align(

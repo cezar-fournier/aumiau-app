@@ -150,13 +150,13 @@ app = FastAPI(title="AuMiau API", version="1.0.0")
 
 BILLING_PRODUCTS: dict[str, dict[str, Any]] = {
     "family_monthly": {
-        "amountBrl": "5.76",
+        "amountBrl": "2.99",
         "periodDays": 30,
         "billingPeriod": "P1M",
         "displayName": "AuMiau Family mensal",
     },
     "family_yearly": {
-        "amountBrl": "46.55",
+        "amountBrl": "25.00",
         "periodDays": 365,
         "billingPeriod": "P1Y",
         "displayName": "AuMiau Family anual",
@@ -594,6 +594,7 @@ def initialize_database() -> None:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """,
+        "ALTER TABLE billing_orders ADD COLUMN IF NOT EXISTS qr_code_base64 TEXT",
         """
         CREATE TABLE IF NOT EXISTS entitlements (
             user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1078,21 +1079,19 @@ def save_account_address(
 @app.get("/billing/catalog")
 def billing_catalog() -> dict[str, Any]:
     return {
-        "currencyPolicy": "localized_by_store",
-        "referenceCurrency": "EUR",
+        "currencyPolicy": "brl",
+        "referenceCurrency": "BRL",
         "products": [
             {
                 "productId": "family_monthly",
                 "billingPeriod": "P1M",
-                "referencePriceEur": "0.99",
-                "pixAmountBrl": "5.76",
+                "priceBrl": "2.99",
                 "displayName": "AuMiau Family mensal",
             },
             {
                 "productId": "family_yearly",
                 "billingPeriod": "P1Y",
-                "referencePriceEur": "8.00",
-                "pixAmountBrl": "46.55",
+                "priceBrl": "25.00",
                 "displayName": "AuMiau Family anual",
             },
         ],
@@ -1109,6 +1108,7 @@ def _order_payment(order: dict[str, Any]) -> dict[str, Any]:
         "status": payment.get("status") or order.get("status") or "pending",
         "statusDetail": payment.get("status_detail") or order.get("status_detail"),
         "qrCode": payment_method.get("qr_code"),
+        "qrCodeBase64": payment_method.get("qr_code_base64"),
         "ticketUrl": payment_method.get("ticket_url"),
     }
 
@@ -1207,16 +1207,17 @@ def _apply_mercadopago_order(order: dict[str, Any]) -> dict[str, Any] | None:
                 UPDATE billing_orders
                 SET provider_payment_id = %s,
                     status = %s,
-                    status_detail = %s,
-                    qr_code = COALESCE(%s, qr_code),
-                    ticket_url = COALESCE(%s, ticket_url),
+                     status_detail = %s,
+                     qr_code = COALESCE(%s, qr_code),
+                     qr_code_base64 = COALESCE(%s, qr_code_base64),
+                     ticket_url = COALESCE(%s, ticket_url),
                     paid_at = CASE WHEN %s AND paid_at IS NULL THEN now() ELSE paid_at END,
                     updated_at = now()
                 WHERE provider_order_id = %s
                 """,
                 (
                     payment["paymentId"], status_value, payment["statusDetail"],
-                    payment["qrCode"], payment["ticketUrl"], paid,
+                    payment["qrCode"], payment["qrCodeBase64"], payment["ticketUrl"], paid,
                     provider_order_id,
                 ),
             )
@@ -1284,12 +1285,13 @@ def create_billing_order(
                 INSERT INTO billing_orders
                     (user_id, provider, product_id, external_reference,
                      provider_order_id, provider_payment_id, amount_brl,
-                     status, status_detail, environment, qr_code, ticket_url,
+                      status, status_detail, environment, qr_code, qr_code_base64, ticket_url,
                      expires_at, updated_at)
                 VALUES (%s, 'mercadopago', %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, now())
+                         %s, %s, %s, %s, %s, now())
                 ON CONFLICT (provider_order_id) DO UPDATE SET
                     qr_code = EXCLUDED.qr_code,
+                    qr_code_base64 = EXCLUDED.qr_code_base64,
                     ticket_url = EXCLUDED.ticket_url,
                     status = EXCLUDED.status,
                     status_detail = EXCLUDED.status_detail,
@@ -1300,7 +1302,7 @@ def create_billing_order(
                     provider_order_id, payment["paymentId"], amount,
                     response.get("status") or payment["status"],
                     payment["statusDetail"], MERCADOPAGO_ENVIRONMENT,
-                    qr_code, payment["ticketUrl"], expires_at,
+                    qr_code, payment["qrCodeBase64"], payment["ticketUrl"], expires_at,
                 ),
             )
     return {
@@ -1310,6 +1312,7 @@ def create_billing_order(
         "amountBrl": float(amount),
         "status": response.get("status") or payment["status"],
         "qrCode": qr_code,
+        "qrCodeBase64": payment["qrCodeBase64"],
         "ticketUrl": payment["ticketUrl"],
         "externalReference": external_reference,
         "expiresAt": expires_at.isoformat(),
@@ -1325,8 +1328,8 @@ def get_billing_order(
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT product_id, amount_brl, status, status_detail, qr_code,
-                       ticket_url, expires_at, paid_at
+                 SELECT product_id, amount_brl, status, status_detail, qr_code,
+                        qr_code_base64, ticket_url, expires_at, paid_at
                 FROM billing_orders
                 WHERE provider_order_id = %s AND user_id = %s
                 """,
@@ -1335,7 +1338,7 @@ def get_billing_order(
             local_order = cursor.fetchone()
     if local_order is None:
         raise HTTPException(status_code=404, detail="Pedido não encontrado.")
-    if MERCADOPAGO_ACCESS_TOKEN and not local_order[7]:
+    if MERCADOPAGO_ACCESS_TOKEN and not local_order[8]:
         try:
             _apply_mercadopago_order(mercadopago_request("GET", f"/v1/orders/{order_id}"))
         except HTTPException:
@@ -1344,8 +1347,8 @@ def get_billing_order(
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT product_id, amount_brl, status, status_detail, qr_code,
-                           ticket_url, expires_at, paid_at
+                     SELECT product_id, amount_brl, status, status_detail, qr_code,
+                            qr_code_base64, ticket_url, expires_at, paid_at
                     FROM billing_orders
                     WHERE provider_order_id = %s AND user_id = %s
                     """,
@@ -1360,10 +1363,11 @@ def get_billing_order(
         "status": local_order[2],
         "statusDetail": local_order[3],
         "qrCode": local_order[4],
-        "ticketUrl": local_order[5],
-        "expiresAt": local_order[6].isoformat() if local_order[6] else None,
-        "paidAt": local_order[7].isoformat() if local_order[7] else None,
-        "paid": local_order[7] is not None,
+        "qrCodeBase64": local_order[5],
+        "ticketUrl": local_order[6],
+        "expiresAt": local_order[7].isoformat() if local_order[7] else None,
+        "paidAt": local_order[8].isoformat() if local_order[8] else None,
+        "paid": local_order[8] is not None,
     }
 
 
