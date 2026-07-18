@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -177,6 +178,37 @@ class _LoginPageState extends State<LoginPage> {
   bool busy = false;
   String? message;
 
+  bool _isNetworkError(Object error) {
+    if (error is SocketException || error is TimeoutException) return true;
+    if (error is http.ClientException) {
+      final detail = error.toString().toLowerCase();
+      return detail.contains('socket') ||
+          detail.contains('host lookup') ||
+          detail.contains('connection');
+    }
+    return false;
+  }
+
+  Future<http.Response> _postWithRetry(Uri uri, String body) async {
+    Object? lastError;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: body,
+            )
+            .timeout(const Duration(seconds: 15));
+      } catch (error) {
+        lastError = error;
+        if (!_isNetworkError(error) || attempt == 1) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+      }
+    }
+    throw lastError ?? StateError('Não foi possível conectar ao servidor.');
+  }
+
   @override
   void dispose() {
     email.dispose();
@@ -222,12 +254,11 @@ class _LoginPageState extends State<LoginPage> {
       message = null;
     });
     try {
-      final response = await http.post(
+      final response = await _postWithRetry(
         Uri.parse(
           '$apiBaseUrl/${registering ? 'partner/auth/register' : 'auth/login'}',
         ),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(
+        jsonEncode(
           registering
               ? {
                   'businessName': businessName.text.trim(),
@@ -267,9 +298,11 @@ class _LoginPageState extends State<LoginPage> {
         widget.onAuthenticated(accessToken);
       }
     } catch (error) {
-      setState(
-        () => message = error.toString().replaceFirst('Exception: ', ''),
-      );
+      setState(() {
+        message = _isNetworkError(error)
+            ? 'Não foi possível conectar ao servidor. Verifique sua internet e tente novamente.'
+            : error.toString().replaceFirst('Exception: ', '');
+      });
     } finally {
       if (mounted) setState(() => busy = false);
     }
