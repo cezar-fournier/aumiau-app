@@ -105,6 +105,7 @@ class PartnerCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     partnerType: str = Field(default="clinic", min_length=3, max_length=30)
     cnpj: str = Field(default="", max_length=18)
+    documentType: str = Field(default="", max_length=4)
     phone: str = Field(default="", max_length=30)
     whatsapp: str = Field(default="", max_length=30)
     email: str = Field(default="", max_length=180)
@@ -121,7 +122,8 @@ class PartnerCreateRequest(BaseModel):
 class PartnerRegisterRequest(BaseModel):
     businessName: str = Field(min_length=2, max_length=160)
     partnerType: str = Field(default="clinic", min_length=3, max_length=30)
-    cnpj: str = Field(min_length=14, max_length=18)
+    cnpj: str = Field(min_length=11, max_length=18)
+    documentType: str = Field(default="", max_length=4)
     responsibleName: str = Field(min_length=2, max_length=120)
     email: str = Field(min_length=3, max_length=180)
     password: str = Field(min_length=8, max_length=128)
@@ -141,7 +143,8 @@ class PartnerRegisterRequest(BaseModel):
 class PartnerProfileUpdateRequest(BaseModel):
     businessName: str = Field(min_length=2, max_length=160)
     partnerType: str = Field(default="clinic", min_length=3, max_length=30)
-    cnpj: str = Field(min_length=14, max_length=18)
+    cnpj: str = Field(min_length=11, max_length=18)
+    documentType: str = Field(default="", max_length=4)
     phone: str = Field(default="", max_length=30)
     whatsapp: str = Field(default="", max_length=30)
     address: str = Field(default="", max_length=240)
@@ -318,12 +321,38 @@ def normalize_state_code(state: str) -> str:
     return BRAZILIAN_STATE_CODES.get(normalized, state.strip().upper()[:2])
 
 
-def normalize_cnpj(value: str, *, required: bool = True) -> str:
+def normalize_document(
+    value: str,
+    *,
+    required: bool = True,
+    document_type: str = "",
+) -> str:
     digits = "".join(character for character in value if character.isdigit())
     if not digits and not required:
         return ""
-    if len(digits) != 14 or len(set(digits)) == 1:
-        raise HTTPException(status_code=400, detail="Informe um CNPJ válido com 14 dígitos.")
+    normalized_type = document_type.strip().lower()
+    if normalized_type not in ("", "cpf", "cnpj"):
+        raise HTTPException(status_code=400, detail="Tipo de documento inválido.")
+    if len(digits) not in (11, 14) or len(set(digits)) == 1:
+        raise HTTPException(status_code=400, detail="Informe um CPF ou CNPJ válido.")
+    if normalized_type == "cpf" and len(digits) != 11:
+        raise HTTPException(status_code=400, detail="Informe um CPF válido.")
+    if normalized_type == "cnpj" and len(digits) != 14:
+        raise HTTPException(status_code=400, detail="Informe um CNPJ válido.")
+
+    if len(digits) == 11:
+        first_sum = sum(int(digit) * (10 - index) for index, digit in enumerate(digits[:9]))
+        first_check = (first_sum * 10) % 11
+        first_check = 0 if first_check == 10 else first_check
+        if first_check != int(digits[9]):
+            raise HTTPException(status_code=400, detail="Informe um CPF válido.")
+        second_sum = sum(int(digit) * (11 - index) for index, digit in enumerate(digits[:10]))
+        second_check = (second_sum * 10) % 11
+        second_check = 0 if second_check == 10 else second_check
+        if second_check != int(digits[10]):
+            raise HTTPException(status_code=400, detail="Informe um CPF válido.")
+        return digits
+
     first_weights = (5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
     second_weights = (6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2)
     first_digit = sum(int(digit) * weight for digit, weight in zip(digits[:12], first_weights))
@@ -333,6 +362,11 @@ def normalize_cnpj(value: str, *, required: bool = True) -> str:
     if digits[-2:] != f"{first_digit}{second_digit}":
         raise HTTPException(status_code=400, detail="Informe um CNPJ válido.")
     return digits
+
+
+def normalize_cnpj(value: str, *, required: bool = True) -> str:
+    """Mantém compatibilidade com chamadas antigas, aceitando CPF ou CNPJ."""
+    return normalize_document(value, required=required)
 
 
 @app.middleware("http")
@@ -1218,7 +1252,10 @@ def register_partner(request: PartnerRegisterRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Aceite os Termos de Uso e a Política de Privacidade.")
     if (request.latitude is None) != (request.longitude is None):
         raise HTTPException(status_code=400, detail="Latitude e longitude devem ser informadas juntas.")
-    normalized_cnpj = normalize_cnpj(request.cnpj)
+    normalized_cnpj = normalize_document(
+        request.cnpj,
+        document_type=request.documentType,
+    )
     email = request.email.strip().lower()
     if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
         raise HTTPException(status_code=400, detail="Informe um e-mail válido.")
@@ -1851,7 +1888,10 @@ def update_partner_profile(
 ) -> dict[str, Any]:
     if (request.latitude is None) != (request.longitude is None):
         raise HTTPException(status_code=400, detail="Latitude e longitude devem ser informadas juntas.")
-    normalized_cnpj = normalize_cnpj(request.cnpj)
+    normalized_cnpj = normalize_document(
+        request.cnpj,
+        document_type=request.documentType,
+    )
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1969,7 +2009,11 @@ def create_partner(
 ) -> dict[str, Any]:
     if (request.latitude is None) != (request.longitude is None):
         raise HTTPException(status_code=400, detail="Latitude e longitude devem ser informadas juntas.")
-    normalized_cnpj = normalize_cnpj(request.cnpj, required=False)
+    normalized_cnpj = normalize_document(
+        request.cnpj,
+        required=False,
+        document_type=request.documentType,
+    )
     with database_connection() as connection:
         with connection.cursor() as cursor:
             if normalized_cnpj:

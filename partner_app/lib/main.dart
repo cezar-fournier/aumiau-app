@@ -5,11 +5,102 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
 
 const apiBaseUrl = 'https://aumiau.app.br';
 const forest = Color(0xFF155E50);
 const gold = Color(0xFFFFB31A);
 const surface = Color(0xFFF6F8F6);
+
+String onlyDigits(String value) => value.replaceAll(RegExp(r'\D'), '');
+
+bool _hasRepeatedDigits(String digits) =>
+    digits.isNotEmpty && digits.split('').every((digit) => digit == digits[0]);
+
+bool isValidCpf(String value) {
+  final digits = onlyDigits(value);
+  if (digits.length != 11 || _hasRepeatedDigits(digits)) return false;
+
+  var firstSum = 0;
+  for (var index = 0; index < 9; index++) {
+    firstSum += int.parse(digits[index]) * (10 - index);
+  }
+  final firstCheck = (firstSum * 10) % 11;
+  final normalizedFirst = firstCheck == 10 ? 0 : firstCheck;
+  if (normalizedFirst != int.parse(digits[9])) return false;
+
+  var secondSum = 0;
+  for (var index = 0; index < 10; index++) {
+    secondSum += int.parse(digits[index]) * (11 - index);
+  }
+  final secondCheck = (secondSum * 10) % 11;
+  final normalizedSecond = secondCheck == 10 ? 0 : secondCheck;
+  return normalizedSecond == int.parse(digits[10]);
+}
+
+bool isValidCnpj(String value) {
+  final digits = onlyDigits(value);
+  if (digits.length != 14 || _hasRepeatedDigits(digits)) return false;
+
+  const firstWeights = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  const secondWeights = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+
+  int calculateCheckDigit(String base, List<int> weights) {
+    var sum = 0;
+    for (var index = 0; index < weights.length; index++) {
+      sum += int.parse(base[index]) * weights[index];
+    }
+    final remainder = sum % 11;
+    return remainder < 2 ? 0 : 11 - remainder;
+  }
+
+  final firstCheck = calculateCheckDigit(digits.substring(0, 12), firstWeights);
+  final secondCheck = calculateCheckDigit(
+    digits.substring(0, 12) + firstCheck.toString(),
+    secondWeights,
+  );
+  return digits.endsWith('$firstCheck$secondCheck');
+}
+
+bool isValidCpfOrCnpj(String value) => isValidCpf(value) || isValidCnpj(value);
+
+String formatCpfOrCnpj(String value) {
+  final digits = onlyDigits(
+    value,
+  ).substring(0, onlyDigits(value).length.clamp(0, 14));
+  if (digits.length <= 11) {
+    final first = digits.length > 3 ? '${digits.substring(0, 3)}.' : digits;
+    final second = digits.length > 6
+        ? '$first${digits.substring(3, 6)}.'
+        : first + (digits.length > 3 ? digits.substring(3) : '');
+    final third = digits.length > 9
+        ? '$second${digits.substring(6, 9)}-'
+        : second + (digits.length > 6 ? digits.substring(6) : '');
+    return third + (digits.length > 9 ? digits.substring(9) : '');
+  }
+  final groups = [
+    digits.substring(0, 2),
+    digits.substring(2, 5),
+    digits.substring(5, 8),
+    digits.substring(8, 12),
+  ];
+  final formatted = '${groups[0]}.${groups[1]}.${groups[2]}/${groups[3]}';
+  return digits.length > 12 ? '$formatted-${digits.substring(12)}' : formatted;
+}
+
+class CpfCnpjInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final formatted = formatCpfOrCnpj(newValue.text);
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
 
 void main() {
   runApp(const PartnerApp());
@@ -108,10 +199,13 @@ class _LoginPageState extends State<LoginPage> {
       );
       return;
     }
+    if (registering && !isValidCpfOrCnpj(cnpj.text)) {
+      setState(() => message = 'Informe um CPF ou CNPJ válido.');
+      return;
+    }
     if (registering &&
         (businessName.text.trim().length < 2 ||
             responsibleName.text.trim().length < 2 ||
-            cnpj.text.replaceAll(RegExp(r'[^0-9]'), '').length != 14 ||
             phone.text.trim().length < 8 ||
             address.text.trim().isEmpty ||
             postalCode.text.trim().isEmpty ||
@@ -139,6 +233,9 @@ class _LoginPageState extends State<LoginPage> {
                   'businessName': businessName.text.trim(),
                   'partnerType': 'clinic',
                   'cnpj': cnpj.text.trim(),
+                  'documentType': onlyDigits(cnpj.text).length == 11
+                      ? 'cpf'
+                      : 'cnpj',
                   'responsibleName': responsibleName.text.trim(),
                   'email': email.text.trim(),
                   'password': password.text,
@@ -253,8 +350,13 @@ class _LoginPageState extends State<LoginPage> {
                           TextField(
                             controller: cnpj,
                             keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              CpfCnpjInputFormatter(),
+                              LengthLimitingTextInputFormatter(18),
+                            ],
                             decoration: const InputDecoration(
-                              labelText: 'CNPJ *',
+                              labelText: 'CPF ou CNPJ *',
+                              hintText: 'Digite CPF ou CNPJ',
                             ),
                           ),
                           const SizedBox(height: 12),
