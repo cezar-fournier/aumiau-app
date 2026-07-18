@@ -168,6 +168,10 @@ class _LoginPageState extends State<LoginPage> {
   final password = TextEditingController();
   final businessName = TextEditingController();
   final responsibleName = TextEditingController();
+  final responsibleCpf = TextEditingController();
+  final crmvUf = TextEditingController();
+  final crmvNumber = TextEditingController();
+  final artNumber = TextEditingController();
   final cnpj = TextEditingController();
   final phone = TextEditingController();
   final address = TextEditingController();
@@ -215,6 +219,10 @@ class _LoginPageState extends State<LoginPage> {
     password.dispose();
     businessName.dispose();
     responsibleName.dispose();
+    responsibleCpf.dispose();
+    crmvUf.dispose();
+    crmvNumber.dispose();
+    artNumber.dispose();
     cnpj.dispose();
     phone.dispose();
     address.dispose();
@@ -233,6 +241,12 @@ class _LoginPageState extends State<LoginPage> {
     }
     if (registering && !isValidCpfOrCnpj(cnpj.text)) {
       setState(() => message = 'Informe um CPF ou CNPJ válido.');
+      return;
+    }
+    if (registering &&
+        responsibleCpf.text.trim().isNotEmpty &&
+        !isValidCpf(responsibleCpf.text)) {
+      setState(() => message = 'Informe um CPF válido para o responsável técnico.');
       return;
     }
     if (registering &&
@@ -268,6 +282,10 @@ class _LoginPageState extends State<LoginPage> {
                       ? 'cpf'
                       : 'cnpj',
                   'responsibleName': responsibleName.text.trim(),
+                  'responsibleCpf': responsibleCpf.text.trim(),
+                  'crmvUf': crmvUf.text.trim().toUpperCase(),
+                  'crmvNumber': crmvNumber.text.trim(),
+                  'artNumber': artNumber.text.trim(),
                   'email': email.text.trim(),
                   'password': password.text,
                   'phone': phone.text.trim(),
@@ -378,6 +396,61 @@ class _LoginPageState extends State<LoginPage> {
                             decoration: const InputDecoration(
                               labelText: 'Nome do responsável *',
                             ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: responsibleCpf,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              CpfCnpjInputFormatter(),
+                              LengthLimitingTextInputFormatter(14),
+                            ],
+                            decoration: const InputDecoration(
+                              labelText: 'CPF do responsável técnico',
+                              hintText: 'Será usado na validação profissional',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                flex: 2,
+                                child: TextField(
+                                  controller: crmvUf,
+                                  textCapitalization: TextCapitalization.characters,
+                                  maxLength: 2,
+                                  decoration: const InputDecoration(
+                                    labelText: 'CRMV/UF',
+                                    hintText: 'Ex.: AM',
+                                    counterText: '',
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                flex: 3,
+                                child: TextField(
+                                  controller: crmvNumber,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Nº do CRMV',
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: artNumber,
+                            decoration: const InputDecoration(
+                              labelText: 'Nº da ART (se aplicável)',
+                              hintText: 'Será conferido antes da publicação',
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'O cadastro ficará pendente de análise até a conferência dos dados e documentos profissionais.',
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
                           const SizedBox(height: 12),
                           TextField(
@@ -773,6 +846,7 @@ class _PartnerDashboardState extends State<PartnerDashboard> {
     final subscription = data?['subscription'] as Map<String, dynamic>?;
     final profileData = data?['profile'] as Map<String, dynamic>?;
     final active = subscription?['status'] == 'active';
+    final verified = data?['verificationStatus'] == 'approved';
     return Scaffold(
       appBar: AppBar(
         title: const Text('AuMiau Parceiro'),
@@ -824,7 +898,11 @@ class _PartnerDashboardState extends State<PartnerDashboard> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            active ? 'PERFIL PUBLICADO' : 'CADASTRO PENDENTE',
+                            !verified
+                                ? 'AGUARDANDO VERIFICAÇÃO'
+                                : active
+                                ? 'PERFIL PUBLICADO'
+                                : 'ASSINATURA PENDENTE',
                             style: const TextStyle(
                               color: gold,
                               fontWeight: FontWeight.bold,
@@ -865,14 +943,17 @@ class _PartnerDashboardState extends State<PartnerDashboard> {
                               style: TextStyle(fontWeight: FontWeight.bold),
                             ),
                             const SizedBox(height: 8),
-                            const Text(
-                              'Contrate a assinatura para publicar localização, serviços, WhatsApp e atendimento de urgência.',
+                            Text(
+                              !verified
+                                  ? 'O cadastro profissional será analisado antes da publicação. Depois da aprovação, contrate a assinatura para publicar localização, serviços, WhatsApp e atendimento de urgência.'
+                                  : 'Contrate a assinatura para publicar localização, serviços, WhatsApp e atendimento de urgência.',
                             ),
                             const SizedBox(height: 14),
-                            FilledButton(
-                              onPressed: openPlans,
-                              child: const Text('Conhecer assinatura'),
-                            ),
+                            if (verified)
+                              FilledButton(
+                                onPressed: openPlans,
+                                child: const Text('Conhecer assinatura'),
+                              ),
                           ],
                         ),
                       ),

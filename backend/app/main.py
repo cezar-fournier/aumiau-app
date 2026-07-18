@@ -125,6 +125,10 @@ class PartnerRegisterRequest(BaseModel):
     cnpj: str = Field(min_length=11, max_length=18)
     documentType: str = Field(default="", max_length=4)
     responsibleName: str = Field(min_length=2, max_length=120)
+    responsibleCpf: str = Field(default="", max_length=14)
+    crmvUf: str = Field(default="", max_length=2)
+    crmvNumber: str = Field(default="", max_length=30)
+    artNumber: str = Field(default="", max_length=40)
     email: str = Field(min_length=3, max_length=180)
     password: str = Field(min_length=8, max_length=128)
     phone: str = Field(min_length=8, max_length=30)
@@ -145,6 +149,11 @@ class PartnerProfileUpdateRequest(BaseModel):
     partnerType: str = Field(default="clinic", min_length=3, max_length=30)
     cnpj: str = Field(min_length=11, max_length=18)
     documentType: str = Field(default="", max_length=4)
+    responsibleName: str = Field(default="", max_length=120)
+    responsibleCpf: str = Field(default="", max_length=14)
+    crmvUf: str = Field(default="", max_length=2)
+    crmvNumber: str = Field(default="", max_length=30)
+    artNumber: str = Field(default="", max_length=40)
     phone: str = Field(default="", max_length=30)
     whatsapp: str = Field(default="", max_length=30)
     address: str = Field(default="", max_length=240)
@@ -744,7 +753,14 @@ def current_partner(user: dict[str, Any] = Depends(current_user)) -> dict[str, A
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT users.account_type, partner_profiles.id
+                SELECT EXISTS(
+                           SELECT 1
+                           FROM user_roles
+                           WHERE user_roles.user_id = users.id
+                             AND user_roles.role = 'partner'
+                       ),
+                       users.account_type,
+                       partner_profiles.id
                 FROM users
                 LEFT JOIN partner_profiles ON partner_profiles.owner_user_id = users.id
                 WHERE users.id = %s
@@ -752,9 +768,9 @@ def current_partner(user: dict[str, Any] = Depends(current_user)) -> dict[str, A
                 (int(user["sub"]),),
             )
             account = cursor.fetchone()
-    if account is None or account[0] != "partner" or account[1] is None:
+    if account is None or not (account[0] or account[1] == "partner") or account[2] is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Conta de parceiro necessária.")
-    return {**user, "partner_id": account[1]}
+    return {**user, "partner_id": account[2]}
 
 
 def require_partner_access(user: dict[str, Any] = Depends(current_partner)) -> dict[str, Any]:
@@ -808,6 +824,22 @@ def initialize_database() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS edition TEXT NOT NULL DEFAULT 'family'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_code TEXT NOT NULL DEFAULT 'family'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT 'client'",
+        """
+        CREATE TABLE IF NOT EXISTS user_roles (
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (user_id, role),
+            CHECK (role IN ('client', 'partner', 'admin'))
+        )
+        """,
+        """
+        INSERT INTO user_roles (user_id, role)
+        SELECT id, account_type
+        FROM users
+        WHERE account_type IN ('client', 'partner', 'admin')
+        ON CONFLICT (user_id, role) DO NOTHING
+        """,
         """
         CREATE TABLE IF NOT EXISTS sync_batches (
             id BIGSERIAL PRIMARY KEY,
@@ -1007,8 +1039,47 @@ def initialize_database() -> None:
         "ALTER TABLE partner_profiles ADD COLUMN IF NOT EXISTS owner_user_id BIGINT REFERENCES users(id) ON DELETE CASCADE",
         "ALTER TABLE partner_profiles ADD COLUMN IF NOT EXISTS postal_code TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE partner_profiles ADD COLUMN IF NOT EXISTS cnpj TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE partner_profiles ADD COLUMN IF NOT EXISTS verification_status TEXT NOT NULL DEFAULT 'pending'",
+        "ALTER TABLE partner_profiles ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ",
+        "ALTER TABLE partner_profiles ADD COLUMN IF NOT EXISTS verified_by BIGINT REFERENCES users(id) ON DELETE SET NULL",
+        "UPDATE partner_profiles SET verification_status = 'approved' WHERE status = 'active' AND verification_status = 'pending'",
         "CREATE UNIQUE INDEX IF NOT EXISTS partner_profiles_owner_idx ON partner_profiles (owner_user_id) WHERE owner_user_id IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS partner_profiles_cnpj_idx ON partner_profiles (cnpj) WHERE cnpj <> ''",
+        """
+        CREATE TABLE IF NOT EXISTS partner_professionals (
+            id BIGSERIAL PRIMARY KEY,
+            partner_id BIGINT NOT NULL REFERENCES partner_profiles(id) ON DELETE CASCADE,
+            full_name TEXT NOT NULL,
+            cpf TEXT NOT NULL DEFAULT '',
+            crmv_uf TEXT NOT NULL DEFAULT '',
+            crmv_number TEXT NOT NULL DEFAULT '',
+            art_number TEXT NOT NULL DEFAULT '',
+            is_responsible_technical BOOLEAN NOT NULL DEFAULT FALSE,
+            verification_status TEXT NOT NULL DEFAULT 'pending',
+            verified_at TIMESTAMPTZ,
+            verified_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS partner_professionals_partner_idx ON partner_professionals (partner_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS partner_professionals_rt_idx ON partner_professionals (partner_id) WHERE is_responsible_technical IS TRUE",
+        """
+        CREATE TABLE IF NOT EXISTS partner_documents (
+            id BIGSERIAL PRIMARY KEY,
+            partner_id BIGINT NOT NULL REFERENCES partner_profiles(id) ON DELETE CASCADE,
+            professional_id BIGINT REFERENCES partner_professionals(id) ON DELETE CASCADE,
+            document_type TEXT NOT NULL,
+            storage_key TEXT NOT NULL,
+            document_hash TEXT NOT NULL,
+            verification_status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+            reviewed_at TIMESTAMPTZ,
+            rejection_reason TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS partner_documents_partner_idx ON partner_documents (partner_id, verification_status)",
         """
         CREATE TABLE IF NOT EXISTS private_veterinary_contacts (
             id BIGSERIAL PRIMARY KEY,
@@ -1214,6 +1285,10 @@ def register(request: RegisterRequest) -> dict[str, Any]:
             )
             user_id = cursor.fetchone()[0]
             cursor.execute(
+                "INSERT INTO user_roles (user_id, role) VALUES (%s, 'client') ON CONFLICT DO NOTHING",
+                (user_id,),
+            )
+            cursor.execute(
                 """
                 INSERT INTO entitlements (user_id, entitlement_key, source, status)
                 VALUES (%s, 'family_access', 'account_registration', 'pending')
@@ -1259,36 +1334,66 @@ def register_partner(request: PartnerRegisterRequest) -> dict[str, Any]:
     email = request.email.strip().lower()
     if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
         raise HTTPException(status_code=400, detail="Informe um e-mail válido.")
-    verified = not REQUIRE_EMAIL_VERIFICATION
+    responsible_cpf = normalize_document(
+        request.responsibleCpf,
+        required=False,
+        document_type="cpf",
+    )
+    partner_type = request.partnerType.strip().lower()
+    existing_account = False
     with database_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT 1 FROM users WHERE email = %s", (email,))
-            if cursor.fetchone() is not None:
-                raise HTTPException(status_code=409, detail="E-mail já cadastrado.")
+            cursor.execute(
+                "SELECT id, password_hash, is_active, email_verified FROM users WHERE email = %s",
+                (email,),
+            )
+            account = cursor.fetchone()
+            if account is not None:
+                if not check_password(request.password, account[1]):
+                    raise HTTPException(status_code=401, detail="Credenciais inválidas para ativar o perfil parceiro.")
+                if not account[2]:
+                    raise HTTPException(status_code=403, detail="Esta conta está desativada.")
+                if not account[3]:
+                    raise HTTPException(status_code=403, detail="Confirme o e-mail da conta antes de ativar o perfil parceiro.")
+                user_id = account[0]
+                existing_account = True
+                cursor.execute(
+                    "SELECT 1 FROM partner_profiles WHERE owner_user_id = %s",
+                    (user_id,),
+                )
+                if cursor.fetchone() is not None:
+                    raise HTTPException(status_code=409, detail="O perfil parceiro desta conta já foi cadastrado.")
+            else:
+                verified = not REQUIRE_EMAIL_VERIFICATION
+                cursor.execute(
+                    """
+                    INSERT INTO users
+                        (email, password_hash, full_name, phone, terms_accepted_at,
+                         edition, plan_code, account_type, email_verified)
+                    VALUES (%s, %s, %s, %s, now(), 'partner', 'partner', 'partner', %s)
+                    RETURNING id
+                    """,
+                    (email, hash_password(request.password), request.responsibleName.strip(), request.phone.strip(), verified),
+                )
+                user_id = cursor.fetchone()[0]
+            cursor.execute(
+                "INSERT INTO user_roles (user_id, role) VALUES (%s, 'partner') ON CONFLICT DO NOTHING",
+                (user_id,),
+            )
             cursor.execute("SELECT 1 FROM partner_profiles WHERE cnpj = %s", (normalized_cnpj,))
             if cursor.fetchone() is not None:
-                raise HTTPException(status_code=409, detail="CNPJ já cadastrado.")
-            cursor.execute(
-                """
-                INSERT INTO users
-                    (email, password_hash, full_name, phone, terms_accepted_at,
-                     edition, plan_code, account_type, email_verified)
-                VALUES (%s, %s, %s, %s, now(), 'partner', 'partner', 'partner', %s)
-                RETURNING id
-                """,
-                (email, hash_password(request.password), request.responsibleName.strip(), request.phone.strip(), verified),
-            )
-            user_id = cursor.fetchone()[0]
+                raise HTTPException(status_code=409, detail="CPF/CNPJ já cadastrado.")
             cursor.execute(
                 """
                 INSERT INTO partner_profiles
                     (owner_user_id, name, partner_type, cnpj, phone, whatsapp, email, address,
-                     postal_code, city, state, latitude, longitude, services, accepts_urgency, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                     postal_code, city, state, latitude, longitude, services, accepts_urgency,
+                     status, verification_status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', 'pending')
                 RETURNING id
                 """,
                 (
-                    user_id, request.businessName.strip(), request.partnerType.strip().lower(), normalized_cnpj,
+                    user_id, request.businessName.strip(), partner_type, normalized_cnpj,
                     request.phone.strip(), request.whatsapp.strip(), email, request.address.strip(), request.postalCode.strip(),
                     request.city.strip(), request.state.strip(), request.latitude, request.longitude,
                     psycopg.types.json.Jsonb([value.strip() for value in request.services if value.strip()]),
@@ -1298,12 +1403,25 @@ def register_partner(request: PartnerRegisterRequest) -> dict[str, Any]:
             partner_id = cursor.fetchone()[0]
             cursor.execute(
                 """
+                INSERT INTO partner_professionals
+                    (partner_id, full_name, cpf, crmv_uf, crmv_number, art_number,
+                     is_responsible_technical, verification_status)
+                VALUES (%s, %s, %s, %s, %s, %s, TRUE, 'pending')
+                """,
+                (
+                    partner_id, request.responsibleName.strip(), responsible_cpf,
+                    request.crmvUf.strip().upper(), request.crmvNumber.strip(), request.artNumber.strip(),
+                ),
+            )
+            cursor.execute(
+                """
                 INSERT INTO entitlements (user_id, entitlement_key, source, status)
                 VALUES (%s, 'partner_access', 'account_registration', 'pending')
                 ON CONFLICT (user_id, entitlement_key) DO NOTHING
                 """,
                 (user_id,),
             )
+    verified = existing_account or not REQUIRE_EMAIL_VERIFICATION
     if not verified:
         try:
             token, expires_at = issue_email_verification_token(user_id)
@@ -1318,7 +1436,14 @@ def register_partner(request: PartnerRegisterRequest) -> dict[str, Any]:
             "message": "Cadastro de parceiro criado. Confirme o e-mail e contrate a assinatura para publicar o perfil.",
         }
     session = create_auth_session(user_id, email)
-    session.update({"status": "authenticated", "email": email, "partnerId": partner_id})
+    session.update(
+        {
+            "status": "authenticated",
+            "email": email,
+            "partnerId": partner_id,
+            "profileLinked": "true" if existing_account else "false",
+        }
+    )
     return session
 
 
@@ -1851,13 +1976,26 @@ def get_partner_profile(user: dict[str, Any] = Depends(current_partner)) -> dict
             cursor.execute(
                 """
                 SELECT id, name, partner_type, phone, whatsapp, email, address,
-                       city, state, latitude, longitude, services, accepts_urgency, status, postal_code, cnpj
+                       city, state, latitude, longitude, services, accepts_urgency, status, postal_code, cnpj,
+                       verification_status, verified_at
                 FROM partner_profiles
                 WHERE id = %s AND owner_user_id = %s
                 """,
                 (user["partner_id"], int(user["sub"])),
             )
             profile = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT full_name, cpf, crmv_uf, crmv_number, art_number,
+                       is_responsible_technical, verification_status
+                FROM partner_professionals
+                WHERE partner_id = %s AND is_responsible_technical IS TRUE
+                ORDER BY id
+                LIMIT 1
+                """,
+                (user["partner_id"],),
+            )
+            professional = cursor.fetchone()
             cursor.execute(
                 """
                 SELECT status, valid_until
@@ -1874,6 +2012,17 @@ def get_partner_profile(user: dict[str, Any] = Depends(current_partner)) -> dict
         "status": profile[13],
         "postalCode": profile[14],
         "cnpj": profile[15],
+        "verificationStatus": profile[16],
+        "verifiedAt": profile[17].isoformat() if profile[17] else None,
+        "responsibleProfessional": {
+            "name": professional[0],
+            "cpf": professional[1],
+            "crmvUf": professional[2],
+            "crmvNumber": professional[3],
+            "artNumber": professional[4],
+            "isResponsibleTechnical": professional[5],
+            "verificationStatus": professional[6],
+        } if professional else None,
         "subscription": {
             "status": entitlement[0] if entitlement else "pending",
             "validUntil": entitlement[1].isoformat() if entitlement and entitlement[1] else None,
@@ -1913,6 +2062,34 @@ def update_partner_profile(
                 ),
             )
             profile = cursor.fetchone()
+            cursor.execute(
+                """
+                UPDATE partner_professionals
+                SET full_name = %s, cpf = %s, crmv_uf = %s, crmv_number = %s,
+                    art_number = %s, updated_at = now()
+                WHERE partner_id = %s AND is_responsible_technical IS TRUE
+                """,
+                (
+                    (request.responsibleName.strip() or request.businessName.strip()),
+                    normalize_document(request.responsibleCpf, required=False, document_type="cpf"),
+                    request.crmvUf.strip().upper(), request.crmvNumber.strip(), request.artNumber.strip(),
+                    user["partner_id"],
+                ),
+            )
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    """
+                    INSERT INTO partner_professionals
+                        (partner_id, full_name, cpf, crmv_uf, crmv_number, art_number,
+                         is_responsible_technical, verification_status)
+                    VALUES (%s, %s, %s, %s, %s, %s, TRUE, 'pending')
+                    """,
+                    (
+                        user["partner_id"], (request.responsibleName.strip() or request.businessName.strip()),
+                        normalize_document(request.responsibleCpf, required=False, document_type="cpf"),
+                        request.crmvUf.strip().upper(), request.crmvNumber.strip(), request.artNumber.strip(),
+                    ),
+                )
     if profile is None:
         raise HTTPException(status_code=404, detail="Perfil de parceiro não encontrado.")
     return {"profile": _partner_response(profile[0:13]), "status": profile[13], "postalCode": profile[14], "cnpj": profile[15]}
@@ -1975,7 +2152,7 @@ def list_partners(
                        address, city, state, latitude, longitude, services,
                        accepts_urgency
                 FROM partner_profiles
-                WHERE status = 'active'
+                WHERE status = 'active' AND verification_status = 'approved'
                 ORDER BY name
                 """
             )
@@ -2024,8 +2201,10 @@ def create_partner(
                 """
                 INSERT INTO partner_profiles
                     (name, partner_type, cnpj, phone, whatsapp, email, address,
-                     postal_code, city, state, latitude, longitude, services, accepts_urgency)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     postal_code, city, state, latitude, longitude, services, accepts_urgency,
+                     status, verification_status, verified_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        'active', 'approved', now())
                 RETURNING id, created_at
                 """,
                 (
@@ -2045,15 +2224,26 @@ def create_partner(
 def update_partner_status(
     partner_id: int,
     request: PartnerStatusRequest,
-    _: dict[str, Any] = Depends(current_admin),
+    admin_user: dict[str, Any] = Depends(current_admin),
 ) -> dict[str, str]:
     if request.status not in {"active", "suspended"}:
         raise HTTPException(status_code=422, detail="Status de parceiro inválido.")
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE partner_profiles SET status = %s, updated_at = now() WHERE id = %s",
-                (request.status, partner_id),
+                """
+                UPDATE partner_profiles
+                SET status = %s,
+                    verification_status = CASE WHEN %s = 'active' THEN 'approved' ELSE verification_status END,
+                    verified_at = CASE WHEN %s = 'active' THEN COALESCE(verified_at, now()) ELSE verified_at END,
+                    verified_by = CASE WHEN %s = 'active' THEN %s ELSE verified_by END,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (
+                    request.status, request.status, request.status, request.status,
+                    int(admin_user["sub"]), partner_id,
+                ),
             )
             if cursor.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Parceiro não encontrado.")
@@ -2449,7 +2639,12 @@ def _apply_mercadopago_order(order: dict[str, Any]) -> dict[str, Any] | None:
                 )
                 if entitlement_key == "partner_access":
                     cursor.execute(
-                        "UPDATE partner_profiles SET status = 'active', updated_at = now() WHERE owner_user_id = %s",
+                        """
+                        UPDATE partner_profiles
+                        SET status = CASE WHEN verification_status = 'approved' THEN 'active' ELSE 'pending' END,
+                            updated_at = now()
+                        WHERE owner_user_id = %s
+                        """,
                         (local_order[1],),
                     )
                 else:
@@ -2496,6 +2691,7 @@ def create_billing_order(
     product = BILLING_PRODUCTS.get(request.productId)
     if product is None:
         raise HTTPException(status_code=400, detail="Plano Family inválido.")
+    requested_account_type = str(product.get("accountType") or "client")
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -2511,17 +2707,30 @@ def create_billing_order(
                 (int(user["sub"]),),
             )
             account = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT
+                    EXISTS(SELECT 1 FROM user_roles WHERE user_id = %s AND role = 'client'),
+                    EXISTS(SELECT 1 FROM user_roles WHERE user_id = %s AND role = 'partner')
+                """,
+                (int(user["sub"]), int(user["sub"])),
+            )
+            roles = cursor.fetchone()
     if account is None:
         raise HTTPException(status_code=404, detail="Conta não encontrada.")
-    if product.get("accountType") != account[8]:
+    has_client_role = bool(roles[0]) if roles else account[8] == "client"
+    has_partner_role = bool(roles[1]) if roles else account[8] == "partner"
+    if requested_account_type == "partner" and not has_partner_role:
+        raise HTTPException(status_code=403, detail="Ative o perfil parceiro antes de contratar este plano.")
+    if requested_account_type == "client" and not has_client_role:
         raise HTTPException(status_code=403, detail="Este produto não pertence ao tipo desta conta.")
 
-    if account[2] is None and account[8] == "client":
+    if account[2] is None and requested_account_type == "client":
         raise HTTPException(
             status_code=409,
             detail="Cadastre seu endereço completo antes de contratar o plano Family.",
         )
-    if account[8] == "partner" and not all(account[index] for index in (9, 10, 11, 12)):
+    if requested_account_type == "partner" and not all(account[index] for index in (9, 10, 11, 12)):
         raise HTTPException(
             status_code=409,
             detail="Cadastre endereço, CEP, cidade e estado do perfil profissional antes de contratar.",
@@ -2533,7 +2742,7 @@ def create_billing_order(
     payer_postal_code = account[5] or ""
     payer_street = account[6] or ""
     payer_number = account[7] or ""
-    if account[8] == "partner":
+    if requested_account_type == "partner":
         payer_country = "BR"
         payer_street = account[9]
         payer_postal_code = account[10]
