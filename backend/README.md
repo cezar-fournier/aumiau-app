@@ -1,5 +1,22 @@
 # AuMiau API
 
+## Family, parceiros e atendimentos
+
+O backend mantém os recursos comerciais do Family no PostgreSQL, sem depender
+do banco local do celular.
+
+- `GET/POST /family/invitations`: lista e cria convites por e-mail, pet, papel e permissões.
+- `POST /family/invitations/{id}/accept`: aceita o convite somente para o e-mail autenticado do destinatário.
+- `DELETE /family/invitations/{id}`: cancela um convite pendente.
+- `GET /family/access`: lista os acessos ativos por pet.
+- `GET /partners`: busca parceiros ativos por localização, serviço e urgência.
+- `POST /admin/partners` e `PATCH /admin/partners/{id}/status`: cadastro e moderação administrativa.
+- `GET/POST /appointments`: consulta e solicita atendimentos Family.
+- `PATCH /appointments/{id}/status`: confirma, cancela, faz check-in ou conclui um atendimento.
+
+Os endpoints de família e atendimento exigem entitlement `family_access` ativo.
+A localização só é filtrada quando o usuário fornece latitude e longitude; o backend não coleta localização continuamente.
+
 Backend inicial do contrato de sincronização v1 do aplicativo.
 
 ## Serviços
@@ -44,6 +61,28 @@ anteriores são revogadas.
   de requisições.
 
 O arquivo `.env` contém credenciais e não deve ser versionado.
+
+## Mercado Pago e Pix Family
+
+O backend cria uma cobrança Pix individual em `POST /billing/orders`, usando o
+plano informado pelo aplicativo e o valor definido no servidor. O QR Code
+retornado pelo Mercado Pago é exclusivo para o pedido e não deve ser
+substituído por um QR fixo.
+
+Configure no `.env` da VPS:
+
+```bash
+MERCADOPAGO_ACCESS_TOKEN=APP_USR_...
+MERCADOPAGO_WEBHOOK_SECRET=chave-gerada-em-Webhooks
+MERCADOPAGO_ENVIRONMENT=test
+MERCADOPAGO_NOTIFICATION_URL=https://aumiau.app.br/webhooks/mercadopago
+```
+
+No painel Mercado Pago, configure o evento **Order** para a URL HTTPS acima.
+O endpoint valida `x-signature`, consulta a order no Mercado Pago e somente
+depois cria a assinatura e ativa o entitlement `family_access`. O token e a
+chave do webhook nunca devem ser colocados no APK, no Git ou enviados pelo
+chat.
 
 ## Cadastro de usuários
 

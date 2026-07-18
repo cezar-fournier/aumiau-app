@@ -1,6 +1,11 @@
 import 'dart:convert';
 
+import 'dart:math';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+
+import '../domain/partner_directory.dart';
 
 class SyncAuthSession {
   const SyncAuthSession({
@@ -93,6 +98,7 @@ class HttpSyncGateway implements SyncGateway {
   final Uri baseUri;
   final http.Client _client;
   final Duration timeout;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   @override
   Future<RegistrationResult> register({
@@ -187,6 +193,129 @@ class HttpSyncGateway implements SyncGateway {
     await _post('auth/logout', body: const {}, accessToken: accessToken);
   }
 
+  Future<Map<String, dynamic>> loadAccountStatus({
+    required String accessToken,
+  }) async {
+    final response = await _get('account/status', accessToken: accessToken);
+    return _decodeObject(response);
+  }
+
+  Future<Map<String, dynamic>?> loadAccountAddress({
+    required String accessToken,
+  }) async {
+    final response = await _get('account/address', accessToken: accessToken);
+    final data = _decodeObject(response);
+    return data['address'] is Map
+        ? Map<String, dynamic>.from(data['address'] as Map)
+        : null;
+  }
+
+  Future<void> saveAccountAddress({
+    required String accessToken,
+    required Map<String, dynamic> address,
+  }) async {
+    await _put('account/address', body: address, accessToken: accessToken);
+  }
+
+  Future<List<Map<String, dynamic>>> loadPrivateVeterinaryContacts({
+    required String accessToken,
+  }) async {
+    final data = _decodeObject(
+      await _get('account/veterinary-contacts', accessToken: accessToken),
+    );
+    final contacts = data['contacts'];
+    if (contacts is! List) return const [];
+    return contacts
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  Future<Map<String, dynamic>> upsertPrivateVeterinaryContact({
+    required String accessToken,
+    required Map<String, dynamic> contact,
+  }) async {
+    final data = _decodeObject(
+      await _post(
+        'account/veterinary-contacts',
+        body: contact,
+        accessToken: accessToken,
+      ),
+    );
+    final result = data['contact'];
+    return result is Map ? Map<String, dynamic>.from(result) : data;
+  }
+
+  Future<Map<String, dynamic>> loadBillingCatalog() async {
+    final response = await _get('billing/catalog');
+    return _decodeObject(response);
+  }
+
+  Future<List<PartnerClinic>> loadPartners({
+    double? latitude,
+    double? longitude,
+    bool urgency = false,
+    String? service,
+  }) async {
+    final query = <String, String>{
+      'urgency': urgency.toString(),
+      if (latitude != null) 'latitude': latitude.toString(),
+      if (longitude != null) 'longitude': longitude.toString(),
+      if (service != null && service.trim().isNotEmpty)
+        'service': service.trim(),
+    };
+    final path = Uri(path: 'partners', queryParameters: query).toString();
+    final data = _decodeObject(await _get(path));
+    final rawPartners = data['partners'];
+    if (rawPartners is! List) return const [];
+    return rawPartners.whereType<Map>().map((raw) {
+      final item = Map<String, dynamic>.from(raw);
+      final rawServices = item['services'];
+      return PartnerClinic(
+        id: item['id']?.toString() ?? '',
+        name: item['name']?.toString() ?? 'Parceiro AuMiau',
+        kind: item['kind']?.toString() ?? 'Veterinário',
+        address: item['address']?.toString() ?? '',
+        city: item['city']?.toString() ?? '',
+        state: item['state']?.toString() ?? '',
+        latitude: (item['latitude'] as num?)?.toDouble() ?? 0,
+        longitude: (item['longitude'] as num?)?.toDouble() ?? 0,
+        services: rawServices is List
+            ? rawServices.map((value) => value.toString()).toList()
+            : const [],
+        acceptsUrgency: item['acceptsUrgency'] == true,
+        isDemonstration: false,
+        phone: item['phone']?.toString() ?? '',
+        whatsapp: item['whatsapp']?.toString() ?? '',
+      );
+    }).toList();
+  }
+
+  Future<Map<String, dynamic>> createBillingOrder({
+    required String accessToken,
+    required String productId,
+  }) async {
+    final deviceSessionId = await _deviceSessionId();
+    final response = await _post(
+      'billing/orders',
+      body: {'productId': productId},
+      accessToken: accessToken,
+      extraHeaders: {'X-Meli-Session-Id': deviceSessionId},
+    );
+    return _decodeObject(response);
+  }
+
+  Future<Map<String, dynamic>> loadBillingOrder({
+    required String accessToken,
+    required String orderId,
+  }) async {
+    final response = await _get(
+      'billing/orders/${Uri.encodeComponent(orderId)}',
+      accessToken: accessToken,
+    );
+    return _decodeObject(response);
+  }
+
   @override
   Future<SyncBatchAck> pushBatch({
     required Map<String, dynamic> payload,
@@ -236,6 +365,73 @@ class HttpSyncGateway implements SyncGateway {
     String path, {
     required Map<String, dynamic> body,
     String? accessToken,
+    Map<String, String>? extraHeaders,
+  }) async {
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+      ...?extraHeaders,
+    };
+    try {
+      final response = await _client
+          .post(baseUri.resolve(path), headers: headers, body: jsonEncode(body))
+          .timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw SyncGatewayException(
+          _errorMessage(response),
+          statusCode: response.statusCode,
+        );
+      }
+      return response;
+    } on SyncGatewayException {
+      rethrow;
+    } catch (error) {
+      throw SyncGatewayException('Falha de comunicação com o servidor: $error');
+    }
+  }
+
+  Future<String> _deviceSessionId() async {
+    const storageKey = 'aumiau.mercadopago.device_session_id';
+    final existing = await _secureStorage.read(key: storageKey);
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final random = Random.secure();
+    final generated = List<String>.generate(
+      32,
+      (_) => random.nextInt(16).toRadixString(16),
+    ).join();
+    await _secureStorage.write(key: storageKey, value: generated);
+    return generated;
+  }
+
+  Future<http.Response> _get(String path, {String? accessToken}) async {
+    final headers = <String, String>{
+      'Accept': 'application/json',
+      if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+    };
+    try {
+      final response = await _client
+          .get(baseUri.resolve(path), headers: headers)
+          .timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw SyncGatewayException(
+          _errorMessage(response),
+          statusCode: response.statusCode,
+        );
+      }
+      return response;
+    } on SyncGatewayException {
+      rethrow;
+    } catch (error) {
+      throw SyncGatewayException('Falha de comunicação com o servidor: $error');
+    }
+  }
+
+  Future<http.Response> _put(
+    String path, {
+    required Map<String, dynamic> body,
+    String? accessToken,
   }) async {
     final headers = <String, String>{
       'Content-Type': 'application/json',
@@ -244,7 +440,7 @@ class HttpSyncGateway implements SyncGateway {
     };
     try {
       final response = await _client
-          .post(baseUri.resolve(path), headers: headers, body: jsonEncode(body))
+          .put(baseUri.resolve(path), headers: headers, body: jsonEncode(body))
           .timeout(timeout);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw SyncGatewayException(

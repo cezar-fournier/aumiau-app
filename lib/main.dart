@@ -1,9 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'config/app_config.dart';
 import 'data/app_database.dart';
+import 'domain/partner_directory.dart';
+import 'domain/product_plan.dart';
 import 'services/backup_service.dart';
 import 'services/notification_service.dart';
 import 'services/pdf_service.dart';
@@ -108,8 +116,24 @@ class Pet {
     required this.emoji,
     required this.weight,
     this.allergies = '',
+    this.birthDate,
+    this.sex = '',
+    this.color = '',
+    this.characteristics = '',
+    this.hasPedigree = false,
+    this.pedigreeNumber,
+    this.microchip,
+    this.size = '',
+    this.reproductiveStatus = '',
+    this.bodyConditionScore,
+    this.clinicReference = '',
+    this.veterinarianReference = '',
+    this.documentNotes = '',
+    this.photoData,
     this.vaccines = const [],
     this.weights = const [],
+    this.preventives = const [],
+    this.medications = const [],
   });
 
   final int? id;
@@ -119,8 +143,24 @@ class Pet {
   final String emoji;
   double weight;
   String allergies;
+  final DateTime? birthDate;
+  final String sex;
+  final String color;
+  final String characteristics;
+  final bool hasPedigree;
+  final String? pedigreeNumber;
+  final String? microchip;
+  final String size;
+  final String reproductiveStatus;
+  final double? bodyConditionScore;
+  final String clinicReference;
+  final String veterinarianReference;
+  final String documentNotes;
+  final String? photoData;
   final List<VaccineRecord> vaccines;
   final List<WeightRecord> weights;
+  final List<PreventiveRecord> preventives;
+  final List<MedicationPlan> medications;
 }
 
 class VaccineRecord {
@@ -157,6 +197,98 @@ class WeightRecord {
   final String? note;
 }
 
+class PreventiveRecord {
+  PreventiveRecord({
+    this.id,
+    required this.petId,
+    required this.category,
+    required this.product,
+    required this.appliedAt,
+    this.nextDueAt,
+    this.provider,
+    this.notes,
+  });
+
+  final int? id;
+  final int petId;
+  final String category;
+  final String product;
+  final DateTime appliedAt;
+  final DateTime? nextDueAt;
+  final String? provider;
+  final String? notes;
+}
+
+class MedicationPlan {
+  MedicationPlan({
+    this.id,
+    required this.petId,
+    required this.name,
+    required this.dosage,
+    required this.schedule,
+    required this.startAt,
+    this.endAt,
+    this.active = true,
+    this.lastTakenAt,
+    this.notes,
+  });
+
+  final int? id;
+  final int petId;
+  final String name;
+  final String dosage;
+  final String schedule;
+  final DateTime startAt;
+  final DateTime? endAt;
+  final bool active;
+  DateTime? lastTakenAt;
+  final String? notes;
+}
+
+class FamilyInvitation {
+  FamilyInvitation({
+    this.id,
+    required this.petId,
+    required this.email,
+    required this.role,
+    required this.permissions,
+    required this.status,
+    required this.expiresAt,
+    required this.createdAt,
+  });
+
+  final int? id;
+  final int petId;
+  final String email;
+  final String role;
+  final String permissions;
+  final String status;
+  final DateTime expiresAt;
+  final DateTime createdAt;
+}
+
+class Appointment {
+  Appointment({
+    this.id,
+    required this.petId,
+    required this.partnerName,
+    required this.service,
+    required this.scheduledAt,
+    required this.status,
+    this.notes,
+    required this.createdAt,
+  });
+
+  final int? id;
+  final int petId;
+  final String partnerName;
+  final String service;
+  final DateTime scheduledAt;
+  String status;
+  final String? notes;
+  final DateTime createdAt;
+}
+
 class TimelineEntry {
   TimelineEntry({
     required this.title,
@@ -175,15 +307,29 @@ class LocalProfile {
   LocalProfile({
     required this.name,
     required this.email,
-    this.plan = 'Gratuito',
+    this.plan = 'free_offline',
+    this.familyEnabled = false,
+    this.familyValidUntil,
   });
 
   String name;
   String email;
   String plan;
+  bool familyEnabled;
+  DateTime? familyValidUntil;
 
-  factory LocalProfile.defaultProfile() =>
-      LocalProfile(name: 'Cezar Fournier', email: 'cezar@exemplo.com');
+  factory LocalProfile.defaultProfile() => LocalProfile(name: '', email: '');
+
+  ProductPlan get productPlan {
+    final planDefinition = ProductCatalog.fromCode(plan);
+    if (planDefinition.isFamily && !familyEnabled) {
+      return ProductCatalog.freeOffline;
+    }
+    return planDefinition;
+  }
+
+  bool get isFamily => productPlan.isFamily;
+  bool get isFreeOffline => productPlan.isFreeOffline;
 }
 
 class Reminder {
@@ -471,6 +617,7 @@ class _HomeShellState extends State<HomeShell> {
     final pages = [
       TodayPage(
         today: _today,
+        profileName: 'Cezar Fournier',
         pets: _pets,
         reminders: _reminders,
         onComplete: _completeReminder,
@@ -524,6 +671,11 @@ class _HomeShellState extends State<HomeShell> {
             label: 'Histórico',
           ),
           NavigationDestination(
+            icon: Icon(Icons.location_searching_outlined),
+            selectedIcon: Icon(Icons.location_searching),
+            label: 'Atendimento',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.person_outline),
             selectedIcon: Icon(Icons.person),
             label: 'Perfil',
@@ -555,6 +707,9 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   List<Pet> _pets = [];
   List<Reminder> _reminders = [];
   List<TimelineEntry> _timeline = [];
+  List<FamilyInvitation> _familyInvitations = [];
+  List<Appointment> _appointments = [];
+  List<PrivateVeterinaryContact> _veterinaryContacts = [];
   LocalProfile _profile = LocalProfile.defaultProfile();
   int _pendingSyncCount = 0;
   late final HttpSyncGateway _syncGateway;
@@ -577,8 +732,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     _syncGateway = HttpSyncGateway(baseUri: AppConfig.apiBaseUri);
     _sessionStore = SessionStore();
     _today = DateTime.now();
-    _restoreSession();
-    _loadData();
+    unawaited(_initializeApp());
     if (widget.enableUpdateChecks) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates());
     }
@@ -588,6 +742,12 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   void dispose() {
     if (widget.database == null) unawaited(_database.close());
     super.dispose();
+  }
+
+  Future<void> _initializeApp() async {
+    await _loadData();
+    if (!mounted) return;
+    await _restoreSession();
   }
 
   Future<void> _checkForUpdates() async {
@@ -614,12 +774,20 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     try {
       final databasePets = await _database.loadPets();
       final databaseVaccines = await _database.loadVaccines();
+      final databasePreventives = await _database.loadPreventiveRecords();
+      final databaseMedications = await _database.loadMedicationPlans();
+      final databaseInvitations = await _database.loadFamilyInvitations();
+      final databaseAppointments = await _database.loadAppointments();
+      final databaseVeterinaryContacts = await _database
+          .loadVeterinaryContacts();
       final databaseWeights = await _database.loadWeights();
       final databaseReminders = await _database.loadReminders();
       final databaseProfile = await _database.loadProfile();
       final pendingSyncOperations = await _database.loadPendingSyncOperations();
       final vaccinesByPet = <int, List<VaccineRecord>>{};
       final weightsByPet = <int, List<WeightRecord>>{};
+      final preventivesByPet = <int, List<PreventiveRecord>>{};
+      final medicationsByPet = <int, List<MedicationPlan>>{};
 
       for (final vaccine in databaseVaccines) {
         vaccinesByPet
@@ -650,6 +818,42 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
             );
       }
 
+      for (final record in databasePreventives) {
+        preventivesByPet
+            .putIfAbsent(record.petId, () => [])
+            .add(
+              PreventiveRecord(
+                id: record.id,
+                petId: record.petId,
+                category: record.category,
+                product: record.product,
+                appliedAt: record.appliedAt,
+                nextDueAt: record.nextDueAt,
+                provider: record.provider,
+                notes: record.notes,
+              ),
+            );
+      }
+
+      for (final medication in databaseMedications) {
+        medicationsByPet
+            .putIfAbsent(medication.petId, () => [])
+            .add(
+              MedicationPlan(
+                id: medication.id,
+                petId: medication.petId,
+                name: medication.name,
+                dosage: medication.dosage,
+                schedule: medication.schedule,
+                startAt: medication.startAt,
+                endAt: medication.endAt,
+                active: medication.active,
+                lastTakenAt: medication.lastTakenAt,
+                notes: medication.notes,
+              ),
+            );
+      }
+
       final petNameById = {for (final pet in databasePets) pet.id: pet.name};
       final timeline = <TimelineEntry>[];
       for (final vaccine in databaseVaccines) {
@@ -660,6 +864,16 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
             subtitle: 'Vacinação',
             date: vaccine.appliedAt,
             icon: Icons.vaccines_outlined,
+          ),
+        );
+      }
+      for (final appointment in databaseAppointments) {
+        timeline.add(
+          TimelineEntry(
+            title: 'Atendimento: ${appointment.service}',
+            subtitle: appointment.partnerName,
+            date: appointment.scheduledAt,
+            icon: Icons.event_available_outlined,
           ),
         );
       }
@@ -686,6 +900,26 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
           );
         }
       }
+      for (final record in databasePreventives) {
+        timeline.add(
+          TimelineEntry(
+            title: '${record.category}: ${record.product}',
+            subtitle: petNameById[record.petId] ?? 'Pet',
+            date: record.appliedAt,
+            icon: Icons.health_and_safety_outlined,
+          ),
+        );
+      }
+      for (final medication in databaseMedications) {
+        timeline.add(
+          TimelineEntry(
+            title: 'Plano de medicamento: ${medication.name}',
+            subtitle: petNameById[medication.petId] ?? 'Pet',
+            date: medication.startAt,
+            icon: Icons.medication_outlined,
+          ),
+        );
+      }
       timeline.sort((a, b) => b.date.compareTo(a.date));
 
       if (!mounted) return;
@@ -696,6 +930,13 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 name: databaseProfile.name,
                 email: databaseProfile.email,
                 plan: databaseProfile.plan,
+                familyEnabled:
+                    databaseProfile.plan == ProductCatalog.family.code &&
+                    (databaseProfile.familyValidUntil == null ||
+                        databaseProfile.familyValidUntil!.isAfter(
+                          DateTime.now(),
+                        )),
+                familyValidUntil: databaseProfile.familyValidUntil,
               );
         _pendingSyncCount = pendingSyncOperations.length;
         _pets = databasePets
@@ -708,12 +949,74 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 emoji: pet.emoji,
                 weight: pet.weight,
                 allergies: pet.allergies,
+                birthDate: pet.birthDate,
+                sex: pet.sex,
+                color: pet.color,
+                characteristics: pet.characteristics,
+                hasPedigree: pet.hasPedigree,
+                pedigreeNumber: pet.pedigreeNumber,
+                microchip: pet.microchip,
+                size: pet.size,
+                reproductiveStatus: pet.reproductiveStatus,
+                bodyConditionScore: pet.bodyConditionScore,
+                clinicReference: pet.clinicReference,
+                veterinarianReference: pet.veterinarianReference,
+                documentNotes: pet.documentNotes,
+                photoData: pet.photoData,
                 vaccines: vaccinesByPet[pet.id] ?? [],
                 weights: weightsByPet[pet.id] ?? [],
+                preventives: preventivesByPet[pet.id] ?? [],
+                medications: medicationsByPet[pet.id] ?? [],
               ),
             )
             .toList();
         _timeline = timeline;
+        _familyInvitations = databaseInvitations
+            .map(
+              (invitation) => FamilyInvitation(
+                id: invitation.id,
+                petId: invitation.petId,
+                email: invitation.email,
+                role: invitation.role,
+                permissions: invitation.permissions,
+                status: invitation.status,
+                expiresAt: invitation.expiresAt,
+                createdAt: invitation.createdAt,
+              ),
+            )
+            .toList();
+        _appointments = databaseAppointments
+            .map(
+              (appointment) => Appointment(
+                id: appointment.id,
+                petId: appointment.petId,
+                partnerName: appointment.partnerName,
+                service: appointment.service,
+                scheduledAt: appointment.scheduledAt,
+                status: appointment.status,
+                notes: appointment.notes,
+                createdAt: appointment.createdAt,
+              ),
+            )
+            .toList();
+        _veterinaryContacts = databaseVeterinaryContacts
+            .map(
+              (contact) => PrivateVeterinaryContact(
+                id: contact.id,
+                name: contact.name,
+                kind: contact.kind,
+                specialty: contact.specialty,
+                phone: contact.phone,
+                whatsapp: contact.whatsapp,
+                address: contact.address,
+                city: contact.city,
+                state: contact.state,
+                notes: contact.notes,
+                latitude: contact.latitude,
+                longitude: contact.longitude,
+              ),
+            )
+            .toList();
         _reminders = databaseReminders
             .map(
               (reminder) => Reminder(
@@ -1083,7 +1386,18 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   }
 
   Future<void> _openAddReminder() async {
-    if (_pets.isEmpty) return;
+    if (_pets.isEmpty) {
+      _showProductMessage('Cadastre um pet antes de criar uma rotina.');
+      return;
+    }
+    if (!_profile.productPlan.canAddReminder(_reminders.length)) {
+      _showUpgradePrompt(
+        title: 'Limite do AuMiau Free Offline',
+        message:
+            'O Free Offline permite uma rotina. Crie uma conta para usar o AuMiau Family com múltiplos cuidados e sincronização.',
+      );
+      return;
+    }
     final titleController = TextEditingController();
     var selectedPet = _pets.first;
     var category = 'Rotina';
@@ -1219,74 +1533,435 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         ),
       ),
     );
+    await WidgetsBinding.instance.endOfFrame;
     titleController.dispose();
   }
 
   Future<void> _openAddPet() async {
+    if (!_profile.productPlan.canAddPet(_pets.length)) {
+      _showUpgradePrompt(
+        title: 'Mais pets no AuMiau Family',
+        message:
+            'O AuMiau Free Offline permite cadastrar um pet. Crie uma conta para continuar cuidando de toda a família.',
+      );
+      return;
+    }
     final nameController = TextEditingController();
+    final breedController = TextEditingController();
+    final colorController = TextEditingController();
+    final weightController = TextEditingController();
+    final characteristicsController = TextEditingController();
+    final pedigreeController = TextEditingController();
+    final microchipController = TextEditingController();
+    final allergiesController = TextEditingController();
+    final bodyConditionController = TextEditingController();
+    final clinicReferenceController = TextEditingController();
+    final veterinarianReferenceController = TextEditingController();
+    final documentNotesController = TextEditingController();
     var species = 'Cão';
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Adicionar pet'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                autofocus: true,
-                decoration: const InputDecoration(labelText: 'Nome do pet'),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: species,
-                decoration: const InputDecoration(labelText: 'Espécie'),
-                items: const [
-                  DropdownMenuItem(value: 'Cão', child: Text('🐶 Cão')),
-                  DropdownMenuItem(value: 'Gata', child: Text('🐱 Gato')),
+    var sex = '';
+    var size = '';
+    var reproductiveStatus = '';
+    String? photoData;
+    DateTime? birthDate;
+    var hasPedigree = false;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Cadastro completo do pet'),
+            content: SingleChildScrollView(
+              // O rótulo flutuante do primeiro campo ultrapassa ligeiramente
+              // a borda superior do TextField. O respiro evita que o viewport
+              // do diálogo, especialmente com o teclado aberto, o corte.
+              padding: const EdgeInsets.only(top: 10, bottom: 4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Nome do pet *',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: species,
+                    decoration: const InputDecoration(labelText: 'Espécie *'),
+                    items: const [
+                      DropdownMenuItem(value: 'Cão', child: Text('🐶 Cão')),
+                      DropdownMenuItem(value: 'Gata', child: Text('🐱 Gato')),
+                      DropdownMenuItem(value: 'Outro', child: Text('🐾 Outro')),
+                    ],
+                    onChanged: (value) =>
+                        setDialogState(() => species = value!),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      final selected = await showDatePicker(
+                        context: context,
+                        firstDate: DateTime(1990),
+                        lastDate: DateTime.now(),
+                        initialDate: birthDate ?? DateTime.now(),
+                      );
+                      if (selected != null) {
+                        setDialogState(() => birthDate = selected);
+                      }
+                    },
+                    icon: const Icon(Icons.cake_outlined),
+                    label: Text(
+                      birthDate == null
+                          ? 'Data de nascimento'
+                          : 'Nascimento: ${_formatFullDate(birthDate!)}',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: sex.isEmpty ? null : sex,
+                    decoration: const InputDecoration(labelText: 'Sexo'),
+                    items: const [
+                      DropdownMenuItem(value: 'Macho', child: Text('Macho')),
+                      DropdownMenuItem(value: 'Fêmea', child: Text('Fêmea')),
+                    ],
+                    onChanged: (value) =>
+                        setDialogState(() => sex = value ?? ''),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: breedController,
+                    decoration: const InputDecoration(labelText: 'Raça'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: colorController,
+                    decoration: const InputDecoration(labelText: 'Cor'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: weightController,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      labelText: 'Peso atual (kg)',
+                    ),
+                  ),
+                  if (_profile.isFamily) ...[
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        onPressed: () async {
+                          final result = await FilePicker.pickFiles(
+                            type: FileType.image,
+                            withData: true,
+                          );
+                          final bytes = result?.files.single.bytes;
+                          if (bytes == null || bytes.length > 2 * 1024 * 1024) {
+                            if (bytes != null && context.mounted) {
+                              _showProductMessage(
+                                'A foto deve ter no máximo 2 MB.',
+                              );
+                            }
+                            return;
+                          }
+                          setDialogState(() => photoData = base64Encode(bytes));
+                        },
+                        icon: const Icon(Icons.add_a_photo_outlined),
+                        label: Text(
+                          photoData == null ? 'Adicionar foto' : 'Trocar foto',
+                        ),
+                      ),
+                    ),
+                    if (photoData != null) ...[
+                      const SizedBox(height: 8),
+                      CircleAvatar(
+                        radius: 32,
+                        backgroundImage: MemoryImage(base64Decode(photoData!)),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: size.isEmpty ? null : size,
+                      decoration: const InputDecoration(labelText: 'Porte'),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'Pequeno',
+                          child: Text('Pequeno'),
+                        ),
+                        DropdownMenuItem(value: 'Médio', child: Text('Médio')),
+                        DropdownMenuItem(
+                          value: 'Grande',
+                          child: Text('Grande'),
+                        ),
+                      ],
+                      onChanged: (value) =>
+                          setDialogState(() => size = value ?? ''),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: reproductiveStatus.isEmpty
+                          ? null
+                          : reproductiveStatus,
+                      decoration: const InputDecoration(
+                        labelText: 'Condição reprodutiva',
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'Não informado',
+                          child: Text('Não informado'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Inteiro(a)',
+                          child: Text('Inteiro(a)'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'Castrado(a)',
+                          child: Text('Castrado(a)'),
+                        ),
+                      ],
+                      onChanged: (value) => setDialogState(
+                        () => reproductiveStatus = value ?? '',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: bodyConditionController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: const InputDecoration(
+                        labelText: 'Escore corporal (1 a 9)',
+                        hintText: 'Avaliação feita pelo tutor ou veterinário',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: characteristicsController,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                        labelText: 'Características e observações',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Possui pedigree'),
+                      value: hasPedigree,
+                      onChanged: (value) =>
+                          setDialogState(() => hasPedigree = value),
+                    ),
+                    if (hasPedigree)
+                      TextField(
+                        controller: pedigreeController,
+                        decoration: const InputDecoration(
+                          labelText: 'Número do pedigree',
+                        ),
+                      ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: microchipController,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Microchip (opcional)',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: allergiesController,
+                      decoration: const InputDecoration(
+                        labelText: 'Alergias e cuidados especiais',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: clinicReferenceController,
+                      decoration: const InputDecoration(
+                        labelText: 'Clínica de referência',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: veterinarianReferenceController,
+                      decoration: const InputDecoration(
+                        labelText: 'Veterinário de referência',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: documentNotesController,
+                      maxLines: 2,
+                      decoration: const InputDecoration(
+                        labelText: 'Documentos e observações',
+                        hintText: 'Ex.: carteira física, registro, laudo...',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                  ] else
+                    const Padding(
+                      padding: EdgeInsets.only(top: 12),
+                      child: Text(
+                        'No Family, você também pode registrar características, pedigree, microchip e cuidados especiais.',
+                        style: TextStyle(color: _muted, fontSize: 12),
+                      ),
+                    ),
                 ],
-                onChanged: (value) => setDialogState(() => species = value!),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  final name = nameController.text.trim();
+                  if (name.isEmpty) return;
+                  final breed = breedController.text.trim().isEmpty
+                      ? 'A informar'
+                      : breedController.text.trim();
+                  final weight =
+                      double.tryParse(
+                        weightController.text.trim().replaceAll(',', '.'),
+                      ) ??
+                      0;
+                  final id = await _database.addPet(
+                    name: name,
+                    species: species,
+                    breed: breed,
+                    emoji: species == 'Cão'
+                        ? '🐶'
+                        : species == 'Gata'
+                        ? '🐱'
+                        : '🐾',
+                    birthDate: birthDate,
+                    sex: sex,
+                    color: colorController.text.trim(),
+                    characteristics: characteristicsController.text.trim(),
+                    hasPedigree: hasPedigree,
+                    pedigreeNumber: hasPedigree
+                        ? pedigreeController.text.trim()
+                        : null,
+                    microchip: microchipController.text.trim().isEmpty
+                        ? null
+                        : microchipController.text.trim(),
+                    size: size,
+                    reproductiveStatus: reproductiveStatus,
+                    bodyConditionScore: double.tryParse(
+                      bodyConditionController.text.trim().replaceAll(',', '.'),
+                    ),
+                    clinicReference: clinicReferenceController.text.trim(),
+                    veterinarianReference: veterinarianReferenceController.text
+                        .trim(),
+                    documentNotes: documentNotesController.text.trim(),
+                    photoData: photoData,
+                    weight: weight,
+                    allergies: allergiesController.text.trim(),
+                  );
+                  if (!mounted) return;
+                  setState(
+                    () => _pets.add(
+                      Pet(
+                        id: id,
+                        name: name,
+                        species: species,
+                        breed: breed,
+                        emoji: species == 'Cão'
+                            ? '🐶'
+                            : species == 'Gata'
+                            ? '🐱'
+                            : '🐾',
+                        weight: weight,
+                        birthDate: birthDate,
+                        sex: sex,
+                        color: colorController.text.trim(),
+                        characteristics: characteristicsController.text.trim(),
+                        hasPedigree: hasPedigree,
+                        pedigreeNumber: hasPedigree
+                            ? pedigreeController.text.trim()
+                            : null,
+                        microchip: microchipController.text.trim().isEmpty
+                            ? null
+                            : microchipController.text.trim(),
+                        size: size,
+                        reproductiveStatus: reproductiveStatus,
+                        bodyConditionScore: double.tryParse(
+                          bodyConditionController.text.trim().replaceAll(
+                            ',',
+                            '.',
+                          ),
+                        ),
+                        clinicReference: clinicReferenceController.text.trim(),
+                        veterinarianReference: veterinarianReferenceController
+                            .text
+                            .trim(),
+                        documentNotes: documentNotesController.text.trim(),
+                        photoData: photoData,
+                        allergies: allergiesController.text.trim(),
+                      ),
+                    ),
+                  );
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                },
+                child: const Text('Salvar cadastro'),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final name = nameController.text.trim();
-                if (name.isEmpty) return;
-                final id = await _database.addPet(
-                  name: name,
-                  species: species,
-                  breed: 'A informar',
-                  emoji: species == 'Cão' ? '🐶' : '🐱',
-                );
-                if (!mounted) return;
-                setState(
-                  () => _pets.add(
-                    Pet(
-                      id: id,
-                      name: name,
-                      species: species,
-                      breed: 'A informar',
-                      emoji: species == 'Cão' ? '🐶' : '🐱',
-                      weight: 0,
-                    ),
-                  ),
-                );
-                if (dialogContext.mounted) Navigator.pop(dialogContext);
-              },
-              child: const Text('Salvar'),
-            ),
-          ],
         ),
+      );
+    } finally {
+      await WidgetsBinding.instance.endOfFrame;
+      for (final controller in [
+        nameController,
+        breedController,
+        colorController,
+        weightController,
+        characteristicsController,
+        pedigreeController,
+        microchipController,
+        allergiesController,
+        bodyConditionController,
+        clinicReferenceController,
+        veterinarianReferenceController,
+        documentNotesController,
+      ]) {
+        controller.dispose();
+      }
+    }
+  }
+
+  void _showProductMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _showUpgradePrompt({required String title, required String message}) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Agora não'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _openAuth(_AuthScreen.register);
+            },
+            child: const Text('Criar conta'),
+          ),
+        ],
       ),
     );
-    nameController.dispose();
   }
 
   Future<void> _openVaccineWallet(Pet pet) async {
@@ -1298,6 +1973,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         builder: (context, setModalState) {
           final records = [...pet.vaccines]
             ..sort((a, b) => b.appliedAt.compareTo(a.appliedAt));
+          final preventives = [...pet.preventives]
+            ..sort((a, b) => b.appliedAt.compareTo(a.appliedAt));
+          final medications = [...pet.medications]
+            ..sort((a, b) => b.startAt.compareTo(a.startAt));
           return Padding(
             padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
             child: SafeArea(
@@ -1357,6 +2036,92 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                         ),
                       ),
                     ),
+                  ),
+                  if (preventives.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Prevenção',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 17,
+                        color: _ink,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ...preventives.map(
+                      (record) => Card(
+                        child: ListTile(
+                          leading: const Icon(
+                            Icons.health_and_safety_outlined,
+                            color: _forest,
+                          ),
+                          title: Text('${record.category}: ${record.product}'),
+                          subtitle: Text(
+                            'Aplicado em ${_formatDate(record.appliedAt)}${record.nextDueAt == null ? '' : ' · Próximo: ${_formatDate(record.nextDueAt!)}'}',
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (medications.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Medicamentos',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 17,
+                        color: _ink,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ...medications.map(
+                      (medication) => Card(
+                        child: ListTile(
+                          leading: const Icon(
+                            Icons.medication_outlined,
+                            color: _forest,
+                          ),
+                          title: Text(medication.name),
+                          subtitle: Text(
+                            '${medication.dosage} · ${medication.schedule}${medication.lastTakenAt == null ? '' : '\nÚltima dose: ${_formatDate(medication.lastTakenAt!)}'}',
+                          ),
+                          isThreeLine: medication.lastTakenAt != null,
+                          trailing: IconButton(
+                            tooltip: 'Registrar dose',
+                            onPressed: medication.id == null
+                                ? null
+                                : () async {
+                                    await _database.markMedicationTaken(
+                                      medication.id!,
+                                    );
+                                    medication.lastTakenAt = DateTime.now();
+                                    if (mounted) setState(() {});
+                                    setModalState(() {});
+                                  },
+                            icon: const Icon(Icons.check_circle_outline),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            _openAddPreventive(pet, () => setModalState(() {})),
+                        icon: const Icon(Icons.health_and_safety_outlined),
+                        label: const Text('Prevenção'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            _openAddMedication(pet, () => setModalState(() {})),
+                        icon: const Icon(Icons.medication_outlined),
+                        label: const Text('Medicamento'),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 8),
                   SizedBox(
@@ -1499,8 +2264,287 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         ),
       ),
     );
+    await WidgetsBinding.instance.endOfFrame;
     nameController.dispose();
     clinicController.dispose();
+  }
+
+  Future<void> _openAddPreventive(Pet pet, VoidCallback onSaved) async {
+    final categoryController = TextEditingController();
+    final productController = TextEditingController();
+    final providerController = TextEditingController();
+    final notesController = TextEditingController();
+    var appliedAt = _today;
+    DateTime? nextDueAt = _today.add(const Duration(days: 90));
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Nova prevenção · ${pet.name}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: categoryController,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Tipo de prevenção',
+                    hintText: 'Ex.: Vermífugo ou antipulgas',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: productController,
+                  decoration: const InputDecoration(labelText: 'Produto'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: providerController,
+                  decoration: const InputDecoration(
+                    labelText: 'Clínica ou veterinário (opcional)',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _DatePickerTile(
+                  label: 'Aplicado em',
+                  value: _formatDate(appliedAt),
+                  onTap: () async {
+                    final value = await showDatePicker(
+                      context: context,
+                      firstDate: DateTime(2000),
+                      lastDate: DateTime(2100),
+                      initialDate: appliedAt,
+                    );
+                    if (value != null) setDialogState(() => appliedAt = value);
+                  },
+                ),
+                const SizedBox(height: 8),
+                _DatePickerTile(
+                  label: 'Próxima aplicação',
+                  value: nextDueAt == null
+                      ? 'Não informada'
+                      : _formatDate(nextDueAt!),
+                  onTap: () async {
+                    final value = await showDatePicker(
+                      context: context,
+                      firstDate: DateTime(2000),
+                      lastDate: DateTime(2100),
+                      initialDate: nextDueAt ?? _today,
+                    );
+                    if (value != null) setDialogState(() => nextDueAt = value);
+                  },
+                  onClear: nextDueAt == null
+                      ? null
+                      : () => setDialogState(() => nextDueAt = null),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: notesController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Observações',
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final category = categoryController.text.trim();
+                final product = productController.text.trim();
+                if (category.isEmpty || product.isEmpty || pet.id == null) {
+                  return;
+                }
+                final id = await _database.addPreventive(
+                  petId: pet.id!,
+                  category: category,
+                  product: product,
+                  appliedAt: appliedAt,
+                  nextDueAt: nextDueAt,
+                  provider: providerController.text.trim().isEmpty
+                      ? null
+                      : providerController.text.trim(),
+                  notes: notesController.text.trim().isEmpty
+                      ? null
+                      : notesController.text.trim(),
+                );
+                pet.preventives.insert(
+                  0,
+                  PreventiveRecord(
+                    id: id,
+                    petId: pet.id!,
+                    category: category,
+                    product: product,
+                    appliedAt: appliedAt,
+                    nextDueAt: nextDueAt,
+                    provider: providerController.text.trim().isEmpty
+                        ? null
+                        : providerController.text.trim(),
+                    notes: notesController.text.trim().isEmpty
+                        ? null
+                        : notesController.text.trim(),
+                  ),
+                );
+                _timeline.insert(
+                  0,
+                  TimelineEntry(
+                    title: '$category: $product',
+                    subtitle: pet.name,
+                    date: appliedAt,
+                    icon: Icons.health_and_safety_outlined,
+                  ),
+                );
+                _timeline.sort((a, b) => b.date.compareTo(a.date));
+                if (mounted) setState(() {});
+                onSaved();
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+              },
+              child: const Text('Salvar prevenção'),
+            ),
+          ],
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    for (final controller in [
+      categoryController,
+      productController,
+      providerController,
+      notesController,
+    ]) {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _openAddMedication(Pet pet, VoidCallback onSaved) async {
+    final nameController = TextEditingController();
+    final dosageController = TextEditingController();
+    final scheduleController = TextEditingController();
+    final notesController = TextEditingController();
+    final startAt = _today;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Novo medicamento · ${pet.name}'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Registre a orientação prescrita e confirme cada dose administrada.',
+                style: TextStyle(color: _muted, height: 1.35),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: nameController,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Medicamento'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: dosageController,
+                decoration: const InputDecoration(
+                  labelText: 'Dose',
+                  hintText: 'Ex.: 1 comprimido',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: scheduleController,
+                decoration: const InputDecoration(
+                  labelText: 'Horários e frequência',
+                  hintText: 'Ex.: a cada 12 horas',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: notesController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Observações',
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final name = nameController.text.trim();
+              final dosage = dosageController.text.trim();
+              final schedule = scheduleController.text.trim();
+              if (name.isEmpty ||
+                  dosage.isEmpty ||
+                  schedule.isEmpty ||
+                  pet.id == null) {
+                return;
+              }
+              final id = await _database.addMedicationPlan(
+                petId: pet.id!,
+                name: name,
+                dosage: dosage,
+                schedule: schedule,
+                startAt: startAt,
+                notes: notesController.text.trim().isEmpty
+                    ? null
+                    : notesController.text.trim(),
+              );
+              pet.medications.insert(
+                0,
+                MedicationPlan(
+                  id: id,
+                  petId: pet.id!,
+                  name: name,
+                  dosage: dosage,
+                  schedule: schedule,
+                  startAt: startAt,
+                  notes: notesController.text.trim().isEmpty
+                      ? null
+                      : notesController.text.trim(),
+                ),
+              );
+              _timeline.insert(
+                0,
+                TimelineEntry(
+                  title: 'Plano de medicamento: $name',
+                  subtitle: pet.name,
+                  date: startAt,
+                  icon: Icons.medication_outlined,
+                ),
+              );
+              _timeline.sort((a, b) => b.date.compareTo(a.date));
+              if (mounted) setState(() {});
+              onSaved();
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+            },
+            child: const Text('Salvar medicamento'),
+          ),
+        ],
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    for (final controller in [
+      nameController,
+      dosageController,
+      scheduleController,
+      notesController,
+    ]) {
+      controller.dispose();
+    }
   }
 
   Future<void> _exportHistoryPdf() async {
@@ -1597,6 +2641,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         ],
       ),
     );
+    await WidgetsBinding.instance.endOfFrame;
     nameController.dispose();
     emailController.dispose();
     if (result == null) return;
@@ -1647,6 +2692,1306 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     );
   }
 
+  Future<void> _openContentLibrary() => ContentLibrarySheet.show(context);
+
+  Future<void> _openAddVeterinaryContact() async {
+    if (!_profile.isFamily) {
+      _showProductMessage(
+        'Cadastros privados de profissionais estão disponíveis no Family.',
+      );
+      return;
+    }
+    final nameController = TextEditingController();
+    final kindController = TextEditingController(text: 'Veterinário');
+    final specialtyController = TextEditingController();
+    final phoneController = TextEditingController();
+    final whatsappController = TextEditingController();
+    final addressController = TextEditingController();
+    final cityController = TextEditingController();
+    final stateController = TextEditingController();
+    final notesController = TextEditingController();
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Cadastrar meu profissional'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Este cadastro é privado e só ficará visível para você.',
+                  style: TextStyle(color: _muted, height: 1.35),
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: nameController,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Nome *'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: kindController,
+                decoration: const InputDecoration(
+                  labelText: 'Tipo',
+                  hintText: 'Veterinário ou clínica',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: specialtyController,
+                decoration: const InputDecoration(labelText: 'Especialidade'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'Telefone'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: whatsappController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(labelText: 'WhatsApp'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: addressController,
+                decoration: const InputDecoration(labelText: 'Endereço'),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: cityController,
+                      decoration: const InputDecoration(labelText: 'Cidade'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 74,
+                    child: TextField(
+                      controller: stateController,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(labelText: 'UF'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: notesController,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Observações',
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final name = nameController.text.trim();
+              if (name.length < 2) {
+                _showProductMessage('Informe o nome do profissional.');
+                return;
+              }
+              final id = await _database.addVeterinaryContact(
+                name: name,
+                kind: kindController.text,
+                specialty: specialtyController.text,
+                phone: phoneController.text,
+                whatsapp: whatsappController.text,
+                address: addressController.text,
+                city: cityController.text,
+                state: stateController.text,
+                notes: notesController.text,
+              );
+              final contact = PrivateVeterinaryContact(
+                id: id,
+                name: name,
+                kind: kindController.text.trim().isEmpty
+                    ? 'Veterinário'
+                    : kindController.text.trim(),
+                specialty: specialtyController.text.trim(),
+                phone: phoneController.text.trim(),
+                whatsapp: whatsappController.text.trim(),
+                address: addressController.text.trim(),
+                city: cityController.text.trim(),
+                state: stateController.text.trim().toUpperCase(),
+                notes: notesController.text.trim(),
+              );
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+              await WidgetsBinding.instance.endOfFrame;
+              if (!mounted) return;
+              setState(() => _veterinaryContacts.add(contact));
+              _showProductMessage('Profissional salvo somente neste aparelho.');
+              unawaited(_syncPrivateVeterinaryContacts());
+            },
+            child: const Text('Salvar contato'),
+          ),
+        ],
+      ),
+    );
+    nameController.dispose();
+    kindController.dispose();
+    specialtyController.dispose();
+    phoneController.dispose();
+    whatsappController.dispose();
+    addressController.dispose();
+    cityController.dispose();
+    stateController.dispose();
+    notesController.dispose();
+  }
+
+  Future<void> _deleteVeterinaryContact(
+    PrivateVeterinaryContact contact,
+  ) async {
+    if (contact.id == null) return;
+    final confirmed = await _confirmAction(
+      title: 'Excluir contato?',
+      message: 'O cadastro privado de ${contact.name} será removido.',
+    );
+    if (!confirmed) return;
+    await _database.deleteVeterinaryContact(contact.id!);
+    if (!mounted) return;
+    setState(
+      () => _veterinaryContacts.removeWhere((item) => item.id == contact.id),
+    );
+    _showProductMessage('Contato privado removido.');
+  }
+
+  Future<List<PartnerClinic>> _loadRemotePartners({
+    double? latitude,
+    double? longitude,
+    bool urgency = false,
+    String? service,
+  }) => _syncGateway.loadPartners(
+    latitude: latitude,
+    longitude: longitude,
+    urgency: urgency,
+    service: service,
+  );
+
+  Future<void> _openScheduleAppointment(PartnerClinic partner) async {
+    if (_pets.isEmpty) {
+      _showProductMessage('Cadastre um pet antes de solicitar atendimento.');
+      return;
+    }
+    final notesController = TextEditingController();
+    final serviceController = TextEditingController(
+      text: partner.services.isEmpty
+          ? 'Consulta veterinária'
+          : partner.services.first,
+    );
+    var selectedPetId = _pets.first.id;
+    var scheduledAt = DateTime.now().add(const Duration(days: 1));
+    scheduledAt = DateTime(
+      scheduledAt.year,
+      scheduledAt.month,
+      scheduledAt.day,
+      10,
+    );
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Solicitar atendimento · ${partner.name}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'O registro organiza o pedido no app. Confirme a disponibilidade diretamente com o parceiro.',
+                  style: TextStyle(color: _muted, height: 1.35),
+                ),
+                const SizedBox(height: 14),
+                DropdownButtonFormField<int>(
+                  initialValue: selectedPetId,
+                  decoration: const InputDecoration(labelText: 'Pet'),
+                  items: _pets
+                      .where((pet) => pet.id != null)
+                      .map(
+                        (pet) => DropdownMenuItem<int>(
+                          value: pet.id,
+                          child: Text(pet.name),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) => setDialogState(
+                    () => selectedPetId = value ?? selectedPetId,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: serviceController,
+                  decoration: const InputDecoration(labelText: 'Serviço'),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final date = await showDatePicker(
+                      context: context,
+                      firstDate: DateTime.now(),
+                      lastDate: DateTime.now().add(const Duration(days: 180)),
+                      initialDate: scheduledAt,
+                    );
+                    if (date == null || !context.mounted) return;
+                    final time = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay.fromDateTime(scheduledAt),
+                    );
+                    if (time == null) return;
+                    setDialogState(
+                      () => scheduledAt = DateTime(
+                        date.year,
+                        date.month,
+                        date.day,
+                        time.hour,
+                        time.minute,
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.calendar_month_outlined),
+                  label: Text('Data e hora: ${_formatFullDate(scheduledAt)}'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: notesController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Observações (opcional)',
+                    alignLabelWithHint: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final service = serviceController.text.trim();
+                if (service.isEmpty || selectedPetId == null) {
+                  _showProductMessage('Informe o serviço e selecione o pet.');
+                  return;
+                }
+                final id = await _database.addAppointment(
+                  petId: selectedPetId!,
+                  partnerName: partner.name,
+                  service: service,
+                  scheduledAt: scheduledAt,
+                  notes: notesController.text.trim().isEmpty
+                      ? null
+                      : notesController.text.trim(),
+                );
+                final appointment = Appointment(
+                  id: id,
+                  petId: selectedPetId!,
+                  partnerName: partner.name,
+                  service: service,
+                  scheduledAt: scheduledAt,
+                  status: 'agendado',
+                  notes: notesController.text.trim().isEmpty
+                      ? null
+                      : notesController.text.trim(),
+                  createdAt: DateTime.now(),
+                );
+                _appointments.insert(0, appointment);
+                _timeline.insert(
+                  0,
+                  TimelineEntry(
+                    title: 'Atendimento: $service',
+                    subtitle: partner.name,
+                    date: scheduledAt,
+                    icon: Icons.event_available_outlined,
+                  ),
+                );
+                if (mounted) setState(() {});
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                _showProductMessage(
+                  'Atendimento registrado. Confirme a disponibilidade com o parceiro.',
+                );
+              },
+              child: const Text('Registrar atendimento'),
+            ),
+          ],
+        ),
+      ),
+    );
+    serviceController.dispose();
+    notesController.dispose();
+  }
+
+  Future<void> _checkInAppointment(Appointment appointment) async {
+    if (appointment.id == null) return;
+    await _database.updateAppointmentStatus(appointment.id!, 'check_in');
+    if (!mounted) return;
+    setState(() => appointment.status = 'check_in');
+    _showProductMessage('Check-in registrado para este atendimento.');
+  }
+
+  Future<void> _openFamilyInvitation() async {
+    if (!_profile.isFamily) {
+      _showProductMessage(
+        'A colaboração entre familiares está disponível no plano Family.',
+      );
+      return;
+    }
+    if (_pets.isEmpty) {
+      _showProductMessage('Cadastre um pet antes de convidar alguém.');
+      return;
+    }
+
+    final emailController = TextEditingController();
+    var selectedPetId = _pets.first.id;
+    var selectedRole = 'Familiar';
+    var selectedPermissions = 'saude';
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Convidar familiar ou cuidador'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'O convite ficará pendente por 7 dias. Ele será sincronizado com o backend quando a conta estiver conectada.',
+                  style: TextStyle(color: _muted, height: 1.35),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'E-mail do convidado',
+                    hintText: 'nome@exemplo.com',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<int>(
+                  initialValue: selectedPetId,
+                  decoration: const InputDecoration(labelText: 'Pet'),
+                  items: _pets
+                      .where((pet) => pet.id != null)
+                      .map(
+                        (pet) => DropdownMenuItem<int>(
+                          value: pet.id,
+                          child: Text(pet.name),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) => setDialogState(
+                    () => selectedPetId = value ?? selectedPetId,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: selectedRole,
+                  decoration: const InputDecoration(labelText: 'Perfil'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'Familiar',
+                      child: Text('Familiar'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'Cuidador',
+                      child: Text('Cuidador'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'Passeador',
+                      child: Text('Passeador'),
+                    ),
+                  ],
+                  onChanged: (value) => setDialogState(
+                    () => selectedRole = value ?? selectedRole,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: selectedPermissions,
+                  decoration: const InputDecoration(labelText: 'Permissões'),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'saude',
+                      child: Text('Saúde e histórico'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'saude_rotina',
+                      child: Text('Saúde, histórico e rotina'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'visualizacao',
+                      child: Text('Somente visualização'),
+                    ),
+                  ],
+                  onChanged: (value) => setDialogState(
+                    () => selectedPermissions = value ?? selectedPermissions,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final email = emailController.text.trim().toLowerCase();
+                if (!email.contains('@') || selectedPetId == null) {
+                  _showProductMessage(
+                    'Informe um e-mail válido e selecione o pet.',
+                  );
+                  return;
+                }
+                final id = await _database.addFamilyInvitation(
+                  petId: selectedPetId!,
+                  email: email,
+                  role: selectedRole,
+                  permissions: selectedPermissions,
+                  expiresAt: DateTime.now().add(const Duration(days: 7)),
+                );
+                _familyInvitations.insert(
+                  0,
+                  FamilyInvitation(
+                    id: id,
+                    petId: selectedPetId!,
+                    email: email,
+                    role: selectedRole,
+                    permissions: selectedPermissions,
+                    status: 'pendente',
+                    expiresAt: DateTime.now().add(const Duration(days: 7)),
+                    createdAt: DateTime.now(),
+                  ),
+                );
+                if (mounted) setState(() {});
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                _showProductMessage(
+                  'Convite registrado. O envio por e-mail será conectado ao backend.',
+                );
+              },
+              child: const Text('Registrar convite'),
+            ),
+          ],
+        ),
+      ),
+    );
+    emailController.dispose();
+  }
+
+  Future<void> _openAddressEditor() async {
+    final session = await _sessionStore.read();
+    if (session == null) {
+      _showProductMessage(
+        'Crie uma conta Family para cadastrar endereço e localização.',
+      );
+      return;
+    }
+    Map<String, dynamic>? existing;
+    try {
+      existing = await _syncGateway.loadAccountAddress(
+        accessToken: session.accessToken,
+      );
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(error.message);
+      return;
+    }
+    if (!mounted) return;
+
+    final fields = <String, TextEditingController>{
+      'country': TextEditingController(
+        text: existing?['country'] as String? ?? 'Brasil',
+      ),
+      'state': TextEditingController(text: existing?['state'] as String? ?? ''),
+      'city': TextEditingController(text: existing?['city'] as String? ?? ''),
+      'postalCode': TextEditingController(
+        text: existing?['postalCode'] as String? ?? '',
+      ),
+      'street': TextEditingController(
+        text: existing?['street'] as String? ?? '',
+      ),
+      'number': TextEditingController(
+        text: existing?['number'] as String? ?? '',
+      ),
+      'complement': TextEditingController(
+        text: existing?['complement'] as String? ?? '',
+      ),
+      'neighborhood': TextEditingController(
+        text: existing?['neighborhood'] as String? ?? '',
+      ),
+      'reference': TextEditingController(
+        text: existing?['reference'] as String? ?? '',
+      ),
+      'latitude': TextEditingController(
+        text: existing?['latitude']?.toString() ?? '',
+      ),
+      'longitude': TextEditingController(
+        text: existing?['longitude']?.toString() ?? '',
+      ),
+      'accuracy': TextEditingController(
+        text: existing?['accuracy']?.toString() ?? '',
+      ),
+    };
+    var allowVetVisit = existing?['allowVetVisit'] == true;
+    var busy = false;
+    var locating = false;
+    var locationSource = existing?['source'] as String? ?? 'manual';
+
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Endereço e localização'),
+            content: SizedBox(
+              width: 520,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Informe o endereço para comunicação. As coordenadas são opcionais e poderão ser usadas em uma futura solicitação de visita veterinária.',
+                        style: TextStyle(color: _muted, height: 1.35),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    _addressField(fields['country']!, 'País'),
+                    _addressField(fields['state']!, 'Estado'),
+                    _addressField(fields['city']!, 'Cidade'),
+                    _addressField(fields['postalCode']!, 'CEP/código postal'),
+                    _addressField(fields['street']!, 'Rua/avenida'),
+                    _addressField(fields['number']!, 'Número'),
+                    _addressField(
+                      fields['complement']!,
+                      'Complemento (opcional)',
+                    ),
+                    _addressField(fields['neighborhood']!, 'Bairro (opcional)'),
+                    _addressField(
+                      fields['reference']!,
+                      'Ponto de referência (opcional)',
+                    ),
+                    const SizedBox(height: 6),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'GPS opcional (latitude, longitude e precisão em metros)',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: _ink,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: busy || locating
+                            ? null
+                            : () async {
+                                setDialogState(() => locating = true);
+                                try {
+                                  if (!await Geolocator.isLocationServiceEnabled()) {
+                                    _showProductMessage(
+                                      'Ative a localização do aparelho para usar o GPS.',
+                                    );
+                                    return;
+                                  }
+                                  var permission =
+                                      await Geolocator.checkPermission();
+                                  if (permission == LocationPermission.denied) {
+                                    permission =
+                                        await Geolocator.requestPermission();
+                                  }
+                                  if (permission == LocationPermission.denied ||
+                                      permission ==
+                                          LocationPermission.deniedForever) {
+                                    _showProductMessage(
+                                      'Permissão de localização não concedida. Você pode informar o endereço manualmente.',
+                                    );
+                                    return;
+                                  }
+                                  final position =
+                                      await Geolocator.getCurrentPosition(
+                                        locationSettings:
+                                            const LocationSettings(
+                                              accuracy: LocationAccuracy.high,
+                                            ),
+                                      );
+                                  fields['latitude']!.text = position.latitude
+                                      .toStringAsFixed(7);
+                                  fields['longitude']!.text = position.longitude
+                                      .toStringAsFixed(7);
+                                  fields['accuracy']!.text = position.accuracy
+                                      .toStringAsFixed(1);
+                                  locationSource = 'device';
+                                  _showProductMessage(
+                                    'Localização atual preenchida. Confira o endereço antes de salvar.',
+                                  );
+                                } catch (_) {
+                                  _showProductMessage(
+                                    'Não foi possível obter a localização atual.',
+                                  );
+                                } finally {
+                                  if (context.mounted) {
+                                    setDialogState(() => locating = false);
+                                  }
+                                }
+                              },
+                        icon: Icon(
+                          locating ? Icons.sync : Icons.my_location_outlined,
+                        ),
+                        label: Text(
+                          locating
+                              ? 'Obtendo localização...'
+                              : 'Usar localização atual',
+                        ),
+                      ),
+                    ),
+                    _addressField(
+                      fields['latitude']!,
+                      'Latitude',
+                      keyboardType: TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                    ),
+                    _addressField(
+                      fields['longitude']!,
+                      'Longitude',
+                      keyboardType: TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                    ),
+                    _addressField(
+                      fields['accuracy']!,
+                      'Precisão em metros (opcional)',
+                      keyboardType: TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                    ),
+                    SwitchListTile.adaptive(
+                      contentPadding: EdgeInsets.zero,
+                      value: allowVetVisit,
+                      onChanged: busy
+                          ? null
+                          : (value) =>
+                                setDialogState(() => allowVetVisit = value),
+                      title: const Text(
+                        'Aceito avaliar atendimento veterinário no local',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: busy
+                    ? null
+                    : () async {
+                        final requiredKeys = [
+                          'country',
+                          'state',
+                          'city',
+                          'postalCode',
+                          'street',
+                          'number',
+                        ];
+                        if (requiredKeys.any(
+                          (key) => fields[key]!.text.trim().isEmpty,
+                        )) {
+                          _showProductMessage(
+                            'Preencha país, estado, cidade, CEP, rua e número.',
+                          );
+                          return;
+                        }
+                        setDialogState(() => busy = true);
+                        try {
+                          await _syncGateway.saveAccountAddress(
+                            accessToken: session.accessToken,
+                            address: {
+                              'country': fields['country']!.text.trim(),
+                              'state': fields['state']!.text.trim(),
+                              'city': fields['city']!.text.trim(),
+                              'postalCode': fields['postalCode']!.text.trim(),
+                              'street': fields['street']!.text.trim(),
+                              'number': fields['number']!.text.trim(),
+                              'complement': fields['complement']!.text.trim(),
+                              'neighborhood': fields['neighborhood']!.text
+                                  .trim(),
+                              'reference': fields['reference']!.text.trim(),
+                              'latitude': double.tryParse(
+                                fields['latitude']!.text.trim(),
+                              ),
+                              'longitude': double.tryParse(
+                                fields['longitude']!.text.trim(),
+                              ),
+                              'accuracy': double.tryParse(
+                                fields['accuracy']!.text.trim(),
+                              ),
+                              'source': locationSource,
+                              'allowVetVisit': allowVetVisit,
+                              'consentVersion': 'v1.0',
+                            },
+                          );
+                          if (dialogContext.mounted) {
+                            Navigator.pop(dialogContext);
+                          }
+                          _showProductMessage('Endereço salvo com segurança.');
+                        } on SyncGatewayException catch (error) {
+                          if (context.mounted) {
+                            setDialogState(() => busy = false);
+                            _showProductMessage(error.message);
+                          }
+                        }
+                      },
+                child: Text(busy ? 'Salvando...' : 'Salvar endereço'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      await WidgetsBinding.instance.endOfFrame;
+      for (final controller in fields.values) {
+        controller.dispose();
+      }
+    }
+  }
+
+  Future<void> _showSubscriptionOptions() async {
+    Map<String, dynamic> catalog = const {};
+    try {
+      catalog = await _syncGateway.loadBillingCatalog();
+    } catch (_) {
+      // Os preços de referência abaixo mantêm a tela útil durante o modo offline.
+    }
+    if (!mounted) return;
+    final products = catalog['products'] is List
+        ? (catalog['products'] as List).whereType<Map>().toList()
+        : const <Map>[];
+    double pixAmountFor(String productId, double fallback) {
+      for (final product in products) {
+        if (product['productId'] == productId) {
+          final amount = product['priceBrl'] ?? product['pixAmountBrl'];
+          if (amount is num) return amount.toDouble();
+          return double.tryParse(amount.toString().replaceAll(',', '.')) ??
+              fallback;
+        }
+      }
+      return fallback;
+    }
+
+    String pixPriceFor(String productId, double fallback) {
+      final amount = pixAmountFor(productId, fallback);
+      return 'R\$ ${amount.toStringAsFixed(2).replaceAll('.', ',')}';
+    }
+
+    void openPix(
+      BuildContext dialogContext,
+      String productId,
+      String planName,
+      double fallback,
+    ) {
+      final amount = pixAmountFor(productId, fallback);
+      Navigator.pop(dialogContext);
+      Future<void>.delayed(Duration.zero, () {
+        if (mounted) {
+          _showPixPayment(
+            productId: productId,
+            planName: planName,
+            amount: amount,
+          );
+        }
+      });
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Conheça o AuMiau Family'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Mais pets, sincronização e recursos para cuidar da família inteira.',
+              style: TextStyle(color: _muted, height: 1.35),
+            ),
+            const SizedBox(height: 14),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.calendar_month_outlined,
+                color: _forest,
+              ),
+              title: const Text('Plano mensal'),
+              subtitle: const Text('Pagamento seguro via Mercado Pago'),
+              trailing: Text(
+                pixPriceFor('family_monthly', 2.99),
+                textAlign: TextAlign.end,
+              ),
+              onTap: () => openPix(
+                dialogContext,
+                'family_monthly',
+                'Family mensal',
+                2.99,
+              ),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.event_available_outlined,
+                color: _forest,
+              ),
+              title: const Text('Plano anual'),
+              subtitle: const Text('Pagamento seguro via Mercado Pago'),
+              trailing: Text(
+                pixPriceFor('family_yearly', 25.00),
+                textAlign: TextAlign.end,
+              ),
+              onTap: () => openPix(
+                dialogContext,
+                'family_yearly',
+                'Family anual',
+                25.00,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Para assinar, entre ou crie uma conta. O Mercado Pago confirmará o pagamento e liberará o Family automaticamente.',
+              style: TextStyle(fontSize: 12, color: _muted, height: 1.35),
+            ),
+          ],
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Entendi'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showPixPayment({
+    required String productId,
+    required String planName,
+    required double amount,
+  }) async {
+    if (_accessToken == null) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Conta necessária'),
+          content: const Text(
+            'Para assinar o AuMiau Family, entre ou crie uma conta. '
+            'Assim o pagamento será associado a você e o acesso será liberado automaticamente.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _openAuth(_AuthScreen.login);
+              },
+              child: const Text('Entrar'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _openAuth(_AuthScreen.register);
+              },
+              child: const Text('Criar conta'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    late final Map<String, dynamic> onlineOrder;
+    try {
+      onlineOrder = await _syncGateway.createBillingOrder(
+        accessToken: _accessToken!,
+        productId: productId,
+      );
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(
+        'Não foi possível conectar ao Mercado Pago agora. ${error.message}',
+      );
+      return;
+    }
+    if (!mounted) return;
+    final pixCode = onlineOrder['qrCode'];
+    final orderId = onlineOrder['orderId'];
+    if (pixCode is! String || pixCode.isEmpty || orderId is! String) {
+      _showProductMessage(
+        'O Mercado Pago não retornou uma cobrança válida. Tente novamente.',
+      );
+      return;
+    }
+    final paidAmount = onlineOrder['amountBrl'] is num
+        ? (onlineOrder['amountBrl'] as num).toDouble()
+        : amount;
+    final amountLabel =
+        'R\$ ${paidAmount.toStringAsFixed(2).replaceAll('.', ',')}';
+    final qrCodeBase64 = onlineOrder['qrCodeBase64'] is String
+        ? onlineOrder['qrCodeBase64'] as String
+        : null;
+    final isTestEnvironment = onlineOrder['environment'] == 'test';
+    final ticketUrl = onlineOrder['ticketUrl'] is String
+        ? onlineOrder['ticketUrl'] as String
+        : null;
+
+    Timer? paymentPoller;
+    var dialogClosed = false;
+    var paymentCheckInFlight = false;
+    var statusMessage = isTestEnvironment
+        ? 'Ambiente de teste: use o bot\u00e3o Abrir pagamento para simular a cobran\u00e7a.'
+        : 'Aguardando confirma\u00e7\u00e3o do pagamento...';
+    var statusColor = isTestEnvironment ? _muted : _forest;
+
+    Future<void> checkPayment(
+      BuildContext dialogContext,
+      StateSetter setDialogState, {
+      bool manual = false,
+    }) async {
+      if (paymentCheckInFlight || dialogClosed) return;
+      paymentCheckInFlight = true;
+      if (manual && dialogContext.mounted) {
+        setDialogState(() {
+          statusMessage = 'Consultando o status do pagamento...';
+          statusColor = _forest;
+        });
+      }
+      try {
+        final updated = await _syncGateway.loadBillingOrder(
+          accessToken: _accessToken!,
+          orderId: orderId,
+        );
+        if (updated['paid'] == true) {
+          dialogClosed = true;
+          paymentPoller?.cancel();
+          await _refreshAccountEntitlement();
+          if (dialogContext.mounted) Navigator.pop(dialogContext);
+          if (mounted) {
+            _showProductMessage(
+              'Pagamento confirmado. O acesso ao Family foi liberado.',
+            );
+          }
+          return;
+        }
+        if (dialogContext.mounted) {
+          setDialogState(() {
+            statusMessage = manual
+                ? 'Pagamento ainda n\u00e3o confirmado. Continuaremos verificando automaticamente.'
+                : 'Aguardando confirma\u00e7\u00e3o do pagamento...';
+            statusColor = _forest;
+          });
+        }
+      } on SyncGatewayException catch (error) {
+        if (manual && dialogContext.mounted) {
+          setDialogState(() {
+            statusMessage = error.message;
+            statusColor = _danger;
+          });
+        }
+      } finally {
+        paymentCheckInFlight = false;
+      }
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          if (paymentPoller == null) {
+            paymentPoller = Timer.periodic(
+              const Duration(seconds: 5),
+              (_) => unawaited(checkPayment(dialogContext, setDialogState)),
+            );
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (dialogContext.mounted) {
+                unawaited(checkPayment(dialogContext, setDialogState));
+              }
+            });
+          }
+          return AlertDialog(
+            title: Text('Pix - $planName'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Valor em Reais: $amountLabel',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      color: _forest,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    isTestEnvironment
+                        ? 'Ambiente de teste: use o bot\u00e3o Abrir pagamento para simular a cobran\u00e7a. Bancos reais n\u00e3o processam este QR.'
+                        : 'Escaneie o QR Code usando o aplicativo do seu banco.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: 230,
+                    height: 230,
+                    child: qrCodeBase64 != null
+                        ? Image.memory(
+                            base64Decode(qrCodeBase64),
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stackTrace) =>
+                                QrImageView(
+                                  data: pixCode,
+                                  version: QrVersions.auto,
+                                  backgroundColor: Colors.white,
+                                ),
+                          )
+                        : QrImageView(
+                            data: pixCode,
+                            version: QrVersions.auto,
+                            backgroundColor: Colors.white,
+                          ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Pagamento processado pelo Mercado Pago.\n'
+                      'Este QR Code é exclusivo para esta cobrança.',
+                      style: TextStyle(fontSize: 12, color: _muted),
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: _openWhatsAppSupport,
+                      icon: const Icon(Icons.chat_outlined, size: 18),
+                      label: const Text('+55 92 99158-0637 - WhatsApp'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SelectableText(
+                    pixCode,
+                    style: const TextStyle(fontSize: 9, color: _muted),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    statusMessage,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: statusColor,
+                      height: 1.35,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    isTestEnvironment
+                        ? 'Este pagamento est\u00e1 no sandbox do Mercado Pago e n\u00e3o libera uma cobran\u00e7a real.'
+                        : 'Após o pagamento, o Mercado Pago notificará o servidor. O Family será liberado depois da confirmação do pagamento.',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: _danger,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              if (ticketUrl != null)
+                TextButton(
+                  onPressed: () => launchUrl(
+                    Uri.parse(ticketUrl),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  child: const Text('Abrir pagamento'),
+                ),
+              TextButton(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: pixCode));
+                  if (!dialogContext.mounted) return;
+                  Navigator.pop(dialogContext);
+                  _showProductMessage('Pix Copia e Cola copiado.');
+                },
+                child: const Text('Copiar código'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  try {
+                    final updated = await _syncGateway.loadBillingOrder(
+                      accessToken: _accessToken!,
+                      orderId: orderId,
+                    );
+                    if (updated['paid'] == true) {
+                      await _refreshAccountEntitlement();
+                      if (dialogContext.mounted) Navigator.pop(dialogContext);
+                      _showProductMessage(
+                        'Pagamento confirmado. Family liberado.',
+                      );
+                    } else {
+                      _showProductMessage('Pagamento ainda não confirmado.');
+                    }
+                  } on SyncGatewayException catch (error) {
+                    _showProductMessage(error.message);
+                  }
+                },
+                child: const Text('Verificar pagamento'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Fechar'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    dialogClosed = true;
+    paymentPoller?.cancel();
+  }
+
+  Future<void> _openWhatsAppSupport() async {
+    const phone = '5592991580637';
+    final message = Uri.encodeComponent(
+      'Olá! Preciso de ajuda com o pagamento do AuMiau Family.',
+    );
+    final whatsappUri = Uri.parse('https://wa.me/$phone?text=$message');
+    final opened = await launchUrl(
+      whatsappUri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened && mounted) {
+      _showProductMessage('Não foi possível abrir o WhatsApp.');
+    }
+  }
+
+  Future<void> _openDeveloperWhatsApp(String phone) async {
+    final uri = Uri.parse(
+      'https://wa.me/$phone?text=${Uri.encodeComponent('Olá! Vim pelo AuMiau e gostaria de falar com a C.A. Informática.')}',
+    );
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      _showProductMessage('Não foi possível abrir o WhatsApp.');
+    }
+  }
+
+  Future<void> _openDeveloperInfo() async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Desenvolvedor'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset(
+                'assets/branding/ca_informatica_logo.png',
+                width: 120,
+                height: 120,
+                fit: BoxFit.contain,
+                semanticLabel: 'Logo da C.A. Informática',
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'C.A. Informática',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 10),
+              const Text('CNPJ: 04.368.187/0001-31'),
+              const SizedBox(height: 8),
+              const Text(
+                'Av. Auton Furtado, 233 - Cidade Nova\n'
+                '69.415-000 - Iranduba - AM - Brasil',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              InkWell(
+                onTap: () => launchUrl(
+                  Uri.parse('https://www.cainformatica.com.br'),
+                  mode: LaunchMode.externalApplication,
+                ),
+                child: const Text(
+                  'www.cainformatica.com.br',
+                  style: TextStyle(
+                    color: _forest,
+                    decoration: TextDecoration.underline,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextButton.icon(
+                onPressed: () => _openDeveloperWhatsApp('5592991580637'),
+                icon: const Icon(Icons.chat_outlined),
+                label: const Text('WhatsApp +55 92 99158-0637'),
+              ),
+              TextButton.icon(
+                onPressed: () => _openDeveloperWhatsApp('5592986092837'),
+                icon: const Icon(Icons.chat_outlined),
+                label: const Text('WhatsApp +55 92 98609-2837'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Fechar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _addressField(
+    TextEditingController controller,
+    String label, {
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        decoration: InputDecoration(labelText: label),
+      ),
+    );
+  }
+
   Future<void> _restoreSession() async {
     final session = await _sessionStore.read();
     if (!mounted) return;
@@ -1658,6 +4003,67 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       _accessToken = session.accessToken;
       _showAuthGate = false;
     });
+    await _refreshAccountEntitlement();
+    await _loadData();
+    unawaited(_syncPrivateVeterinaryContacts());
+  }
+
+  Future<void> _refreshAccountEntitlement() async {
+    final accessToken = _accessToken;
+    if (accessToken == null) return;
+    try {
+      final status = await _syncGateway.loadAccountStatus(
+        accessToken: accessToken,
+      );
+      final entitlement = status['entitlement'];
+      final entitlementMap = entitlement is Map
+          ? Map<String, dynamic>.from(entitlement)
+          : const <String, dynamic>{};
+      final validUntil = entitlementMap['validUntil'] is String
+          ? DateTime.tryParse(entitlementMap['validUntil'] as String)
+          : null;
+      final active =
+          entitlementMap['status'] == 'active' &&
+          (validUntil == null || validUntil.isAfter(DateTime.now().toUtc()));
+      final profile = await _database.loadProfile();
+      final storedSession = await _sessionStore.read();
+      final serverNameValue = status['registeredName'] ?? status['name'];
+      final serverName = serverNameValue is String
+          ? serverNameValue.trim()
+          : '';
+      final profileName = profile?.name.trim() ?? '';
+      final profileEmail = profile?.email.trim() ?? '';
+      final accountEmail = profileEmail.isNotEmpty
+          ? profileEmail
+          : (storedSession?.email ?? '');
+      final displayName = serverName.isNotEmpty
+          ? serverName
+          : (profileName.isNotEmpty ? profileName : accountEmail);
+      if (displayName.isEmpty || accountEmail.isEmpty) return;
+      await _database.saveProfile(
+        name: displayName,
+        email: accountEmail,
+        plan: active
+            ? ProductCatalog.family.code
+            : ProductCatalog.freeOffline.code,
+        familyValidUntil: active ? validUntil : null,
+        preserveFamilyValidUntil: false,
+      );
+      if (!mounted) return;
+      setState(() {
+        _profile.name = displayName;
+        _profile.plan = active
+            ? ProductCatalog.family.code
+            : ProductCatalog.freeOffline.code;
+        _profile.familyEnabled = active;
+        _profile.familyValidUntil = active ? validUntil : null;
+      });
+      await NotificationService.instance.scheduleFamilyExpiryWarning(
+        validUntil: active ? validUntil : null,
+      );
+    } on SyncGatewayException {
+      // O app continua offline com o último estado local conhecido.
+    }
   }
 
   void _openAuth(_AuthScreen screen) {
@@ -1684,9 +4090,16 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       accessToken: session.accessToken,
       refreshToken: session.refreshToken,
     );
-    if (name != null && name.trim().isNotEmpty) {
-      await _database.saveProfile(name: name.trim(), email: email);
-    }
+    final existingProfile = await _database.loadProfile();
+    await _database.saveProfile(
+      name: name?.trim().isNotEmpty == true
+          ? name!.trim()
+          : (existingProfile?.name.trim().isNotEmpty == true
+                ? existingProfile!.name
+                : email),
+      email: email,
+      plan: ProductCatalog.family.code,
+    );
     if (!mounted) return;
     setState(() {
       _showAuthGate = false;
@@ -1694,6 +4107,12 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       _selectedIndex = 0;
     });
     await _loadData();
+    await _refreshAccountEntitlement();
+    if (name != null && mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_openAddressEditor());
+      });
+    }
   }
 
   Future<void> _loginFromAuth({
@@ -1826,6 +4245,75 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     }
   }
 
+  Future<void> _syncPrivateVeterinaryContacts() async {
+    final accessToken = _accessToken;
+    if (accessToken == null || !_profile.isFamily) return;
+    try {
+      final localContacts = await _database.loadVeterinaryContacts();
+      for (final contact in localContacts) {
+        await _syncGateway.upsertPrivateVeterinaryContact(
+          accessToken: accessToken,
+          contact: {
+            'name': contact.name,
+            'kind': contact.kind,
+            'specialty': contact.specialty,
+            'phone': contact.phone,
+            'whatsapp': contact.whatsapp,
+            'address': contact.address,
+            'city': contact.city,
+            'state': contact.state,
+            'notes': contact.notes,
+            'latitude': contact.latitude,
+            'longitude': contact.longitude,
+          },
+        );
+      }
+      final remoteContacts = await _syncGateway.loadPrivateVeterinaryContacts(
+        accessToken: accessToken,
+      );
+      final localKeys = localContacts
+          .map(
+            (contact) => _veterinaryContactKey(
+              contact.name,
+              contact.phone,
+              contact.whatsapp,
+            ),
+          )
+          .toSet();
+      for (final contact in remoteContacts) {
+        final name = contact['name']?.toString() ?? '';
+        final phone = contact['phone']?.toString() ?? '';
+        final whatsapp = contact['whatsapp']?.toString() ?? '';
+        if (name.trim().isEmpty ||
+            localKeys.contains(_veterinaryContactKey(name, phone, whatsapp))) {
+          continue;
+        }
+        await _database.importVeterinaryContact(
+          name: name,
+          kind: contact['kind']?.toString() ?? 'Veterinário',
+          specialty: contact['specialty']?.toString() ?? '',
+          phone: phone,
+          whatsapp: whatsapp,
+          address: contact['address']?.toString() ?? '',
+          city: contact['city']?.toString() ?? '',
+          state: contact['state']?.toString() ?? '',
+          notes: contact['notes']?.toString() ?? '',
+          latitude: (contact['latitude'] as num?)?.toDouble(),
+          longitude: (contact['longitude'] as num?)?.toDouble(),
+        );
+      }
+      if (mounted) await _loadData();
+    } on SyncGatewayException {
+      // Mantém o cadastro local quando a sincronização não estiver disponível.
+    }
+  }
+
+  String _veterinaryContactKey(String name, String phone, String whatsapp) => [
+    name,
+    phone,
+    whatsapp,
+  ].map((value) => value.trim().toLowerCase()).join('|');
+
   Future<void> _syncNow() async {
     if (_syncing) return;
     final storedSession = await _sessionStore.read();
@@ -1838,6 +4326,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     try {
       _accessToken = storedSession.accessToken;
       final acknowledgement = await _synchronizeWithRefresh(storedSession);
+      await _syncPrivateVeterinaryContacts();
       await _loadData();
       if (!mounted) return;
       final count = acknowledgement?.acknowledgedOperationIds.length ?? 0;
@@ -1871,6 +4360,126 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     }
   }
 
+  Future<void> _showNotificationSettings() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Notificações'),
+        content: const Text(
+          'O AuMiau usa notificações locais para lembrar vacinas, medicamentos, '
+          'rotinas e o vencimento do plano Family. Elas funcionam no aparelho '
+          'e não dependem de uma conta online.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await NotificationService.instance.requestPermission();
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              _showProductMessage('Permissão de notificações atualizada.');
+            },
+            child: const Text('Permitir notificações'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              await NotificationService.instance.showTestNotification();
+              if (!dialogContext.mounted) return;
+              Navigator.pop(dialogContext);
+              _showProductMessage('Notificação de teste enviada.');
+            },
+            child: const Text('Enviar teste'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showPrivacyAndData() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Privacidade e dados'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'No Free Offline, os dados ficam somente neste aparelho.\n\n'
+            'No Family, os dados podem ser sincronizados com a conta para '
+            'permitir backup e acesso seguro. O endereço e a localização só '
+            'são usados para atendimento veterinário quando você autoriza.\n\n'
+            'Você pode salvar uma cópia dos dados a qualquer momento pelo '
+            'backup. Não compartilhe seu arquivo de backup com terceiros.',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Fechar'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              unawaited(_saveBackup());
+            },
+            child: const Text('Salvar meus dados'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showHelp() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Ajuda AuMiau'),
+        content: const SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Como sincronizar meus dados?',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              SizedBox(height: 4),
+              Text('Entre na sua conta e toque em “Entrar e sincronizar”.'),
+              SizedBox(height: 12),
+              Text(
+                'Como contratar o Family?',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              SizedBox(height: 4),
+              Text('Abra o plano no Perfil e pague pelo QR Code Pix.'),
+              SizedBox(height: 12),
+              Text(
+                'Precisa falar conosco?',
+                style: TextStyle(fontWeight: FontWeight.w800),
+              ),
+              SizedBox(height: 4),
+              Text('Nossa equipe atende pelo WhatsApp de suporte.'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Fechar'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              unawaited(_openWhatsAppSupport());
+            },
+            icon: const Icon(Icons.chat_outlined),
+            label: const Text('Falar no WhatsApp'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _logout() async {
     if (_syncing) return;
     final storedSession = await _sessionStore.read();
@@ -1884,6 +4493,9 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     } finally {
       await _sessionStore.clear();
       _accessToken = null;
+      await NotificationService.instance.scheduleFamilyExpiryWarning(
+        validUntil: null,
+      );
     }
     if (!mounted) return;
     setState(() {
@@ -1995,12 +4607,15 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     final pages = [
       TodayPage(
         today: _today,
+        profileName: _profile.name,
+        isFamily: _profile.isFamily,
         pets: _pets,
         reminders: _reminders,
         onComplete: _completePersistentReminder,
         onAddReminder: _openAddReminder,
         onEditReminder: _editReminder,
         onDeleteReminder: _deleteReminder,
+        onOpenContent: _openContentLibrary,
       ),
       PetsPage(
         pets: _pets,
@@ -2015,9 +4630,27 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         onAddWeight: _openAddWeight,
         onExportPdf: _exportHistoryPdf,
       ),
+      PartnerDirectoryPage(
+        appointments: _appointments,
+        veterinaryContacts: _veterinaryContacts,
+        onSchedule: _openScheduleAppointment,
+        onCheckIn: _checkInAppointment,
+        onAddVeterinaryContact: _openAddVeterinaryContact,
+        onDeleteVeterinaryContact: _deleteVeterinaryContact,
+        onLoadPartners: _loadRemotePartners,
+      ),
       ProfilePage(
         profile: _profile,
         petCount: _pets.length,
+        onOpenSubscription: _showSubscriptionOptions,
+        onOpenNotifications: _showNotificationSettings,
+        onOpenPrivacy: _showPrivacyAndData,
+        onOpenHelp: _showHelp,
+        onOpenDeveloper: _openDeveloperInfo,
+        onEditAddress: _profile.isFamily ? _openAddressEditor : null,
+        pets: _pets,
+        familyInvitations: _familyInvitations,
+        onInviteFamily: _profile.isFamily ? _openFamilyInvitation : null,
         pendingSyncCount: _pendingSyncCount,
         onEdit: _editProfile,
         onSaveBackup: _saveBackup,
@@ -2068,6 +4701,11 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
             icon: Icon(Icons.timeline_outlined),
             selectedIcon: Icon(Icons.timeline),
             label: 'Histórico',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.location_searching_outlined),
+            selectedIcon: Icon(Icons.location_searching),
+            label: 'Atendimento',
           ),
           NavigationDestination(
             icon: Icon(Icons.person_outline),
@@ -2327,13 +4965,13 @@ class _AuthWelcomeView extends StatelessWidget {
         TextButton(
           onPressed: onOffline,
           child: const Text(
-            'Continuar sem conta',
+            'Usar aplicativo offline',
             style: TextStyle(color: _authPinkDark, fontWeight: FontWeight.w700),
           ),
         ),
         const SizedBox(height: 6),
         const Text(
-          'Seus dados continuam disponíveis offline no aparelho.',
+          'AuMiau Free Offline: seus dados ficam somente neste aparelho.',
           textAlign: TextAlign.center,
           style: TextStyle(color: _muted, fontSize: 12),
         ),
@@ -2952,21 +5590,27 @@ class TodayPage extends StatelessWidget {
   const TodayPage({
     super.key,
     required this.today,
+    required this.profileName,
     required this.pets,
     required this.reminders,
     required this.onComplete,
     required this.onAddReminder,
     required this.onEditReminder,
     required this.onDeleteReminder,
+    this.onOpenContent,
+    this.isFamily = false,
   });
 
   final DateTime today;
+  final String profileName;
   final List<Pet> pets;
   final List<Reminder> reminders;
   final void Function(Reminder) onComplete;
   final VoidCallback onAddReminder;
   final void Function(Reminder) onEditReminder;
   final void Function(Reminder) onDeleteReminder;
+  final VoidCallback? onOpenContent;
+  final bool isFamily;
 
   @override
   Widget build(BuildContext context) {
@@ -2984,14 +5628,17 @@ class TodayPage extends StatelessWidget {
               item.dueDate.isBefore(today.add(const Duration(days: 8))),
         )
         .toList();
+    final greetingName = _firstAndLastName(profileName);
+    final hasGreetingName =
+        greetingName.isNotEmpty && !greetingName.contains('@');
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
       children: [
-        _TopHeader(today: today),
+        _TopHeader(today: today, isFamily: isFamily),
         const SizedBox(height: 22),
         Text(
-          'Oi, Cezar! 👋',
+          !hasGreetingName ? 'Cuide de quem ama' : 'Oi, $greetingName! 👋',
           style: Theme.of(context).textTheme.headlineMedium?.copyWith(
             fontWeight: FontWeight.w800,
             color: _ink,
@@ -3068,7 +5715,135 @@ class TodayPage extends StatelessWidget {
             ),
           ),
         ),
+        if (onOpenContent != null) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.menu_book_outlined, color: _forest),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Conteúdos para você',
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                color: _ink,
+                                fontWeight: FontWeight.w800,
+                              ),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Orientações práticas para rotina, prevenção e bem-estar dos seus pets.',
+                          style: TextStyle(color: _muted, height: 1.35),
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: OutlinedButton.icon(
+                            onPressed: onOpenContent,
+                            icon: const Icon(Icons.arrow_forward),
+                            label: const Text('Abrir conteúdos'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ],
+    );
+  }
+}
+
+class ContentLibrarySheet extends StatelessWidget {
+  const ContentLibrarySheet({super.key});
+
+  static const articles = <Map<String, String>>[
+    {
+      'category': 'Prevenção',
+      'title': 'Como manter a carteira de vacinação em dia',
+      'summary':
+          'Confira como organizar doses, reforços e comprovantes para a próxima consulta.',
+    },
+    {
+      'category': 'Rotina',
+      'title': 'Peso e escore corporal: o que observar',
+      'summary':
+          'Acompanhe mudanças graduais e registre sinais para conversar com o profissional.',
+    },
+    {
+      'category': 'Bem-estar',
+      'title': 'Sinais de alerta que pedem atendimento',
+      'summary':
+          'Em urgências, procure imediatamente um serviço veterinário; o app não substitui avaliação clínica.',
+    },
+  ];
+
+  static Future<void> show(BuildContext context) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => const ContentLibrarySheet(),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Biblioteca AuMiau',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                color: _ink,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Conteúdo educativo não substitui orientação de um médico-veterinário.',
+              style: TextStyle(color: _muted, height: 1.35),
+            ),
+            const SizedBox(height: 14),
+            ...articles.map(
+              (article) => Card(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 6,
+                  ),
+                  leading: const Icon(Icons.article_outlined, color: _forest),
+                  title: Text(
+                    article['title']!,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      '${article['category']} · ${article['summary']}',
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -3564,11 +6339,690 @@ class _PasswordRecoveryDialogState extends State<_PasswordRecoveryDialog> {
   }
 }
 
+class PartnerDirectoryPage extends StatefulWidget {
+  const PartnerDirectoryPage({
+    super.key,
+    this.appointments = const [],
+    this.veterinaryContacts = const [],
+    this.onSchedule,
+    this.onCheckIn,
+    this.onAddVeterinaryContact,
+    this.onDeleteVeterinaryContact,
+    this.onLoadPartners,
+  });
+
+  final List<Appointment> appointments;
+  final List<PrivateVeterinaryContact> veterinaryContacts;
+  final Future<void> Function(PartnerClinic partner)? onSchedule;
+  final Future<void> Function(Appointment appointment)? onCheckIn;
+  final VoidCallback? onAddVeterinaryContact;
+  final Future<void> Function(PrivateVeterinaryContact contact)?
+  onDeleteVeterinaryContact;
+  final Future<List<PartnerClinic>> Function({
+    double? latitude,
+    double? longitude,
+    bool urgency,
+    String? service,
+  })?
+  onLoadPartners;
+
+  @override
+  State<PartnerDirectoryPage> createState() => _PartnerDirectoryPageState();
+}
+
+class _PartnerDirectoryPageState extends State<PartnerDirectoryPage> {
+  final _searchController = TextEditingController();
+  double? _latitude;
+  double? _longitude;
+  bool _urgencyOnly = false;
+  bool _locating = false;
+  String? _locationMessage;
+  List<PartnerClinic> _remotePartners = [];
+  bool _loadingPartners = false;
+  String? _partnerLoadMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadRemotePartners());
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _useCurrentLocation() async {
+    setState(() {
+      _locating = true;
+      _locationMessage = null;
+    });
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        setState(
+          () => _locationMessage =
+              'Ative a localização do aparelho para ordenar por proximidade.',
+        );
+        return;
+      }
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        setState(
+          () => _locationMessage =
+              'Permissão não concedida. Você ainda pode pesquisar por cidade.',
+        );
+        return;
+      }
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+        ),
+      );
+      setState(() {
+        _latitude = position.latitude;
+        _longitude = position.longitude;
+        _locationMessage =
+            'Localização usada somente para ordenar os resultados.';
+      });
+      await _loadRemotePartners();
+    } catch (_) {
+      setState(
+        () => _locationMessage =
+            'Não foi possível obter a localização. Pesquise por cidade.',
+      );
+    } finally {
+      if (mounted) setState(() => _locating = false);
+    }
+  }
+
+  Future<void> _loadRemotePartners() async {
+    final loader = widget.onLoadPartners;
+    if (loader == null) return;
+    if (mounted) {
+      setState(() {
+        _loadingPartners = true;
+        _partnerLoadMessage = null;
+      });
+    }
+    try {
+      final partners = await loader(
+        latitude: _latitude,
+        longitude: _longitude,
+        urgency: _urgencyOnly,
+        service: _searchController.text,
+      );
+      if (!mounted) return;
+      setState(() => _remotePartners = partners);
+    } on SyncGatewayException catch (error) {
+      if (!mounted) return;
+      setState(() => _partnerLoadMessage = error.message);
+    } catch (_) {
+      if (!mounted) return;
+      setState(
+        () => _partnerLoadMessage =
+            'Não foi possível carregar os parceiros agora.',
+      );
+    } finally {
+      if (mounted) setState(() => _loadingPartners = false);
+    }
+  }
+
+  Future<void> _openWhatsApp({
+    required String name,
+    required String phone,
+  }) async {
+    var digits = phone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.length == 10 || digits.length == 11) digits = '55$digits';
+    if (digits.length < 12) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Este contato não possui WhatsApp.')),
+        );
+      }
+      return;
+    }
+    final uri = Uri.https('wa.me', '/$digits', {
+      'text':
+          'Olá! Encontrei $name no AuMiau e gostaria de falar sobre atendimento veterinário.',
+    });
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
+        mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Não foi possível abrir o WhatsApp.')),
+      );
+    }
+  }
+
+  Future<void> _openContactMaps(PrivateVeterinaryContact contact) async {
+    final query = contact.latitude != null && contact.longitude != null
+        ? '${contact.latitude},${contact.longitude}'
+        : [
+            contact.name,
+            contact.address,
+            contact.city,
+            contact.state,
+          ].where((value) => value.trim().isNotEmpty).join(', ');
+    final uri = Uri.https('www.google.com', '/maps/search/', {
+      'api': '1',
+      'query': query,
+    });
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _openMaps(PartnerClinic partner) async {
+    final uri = Uri.https('www.google.com', '/maps/search/', {
+      'api': '1',
+      'query': '${partner.latitude},${partner.longitude}',
+    });
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
+        mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Não foi possível abrir o Maps.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _searchController.text.trim().toLowerCase();
+    final partners =
+        _remotePartners.where((partner) {
+          if (_urgencyOnly && !partner.acceptsUrgency) return false;
+          if (query.isEmpty) return true;
+          final searchable = [
+            partner.name,
+            partner.kind,
+            partner.address,
+            partner.city,
+            partner.state,
+            ...partner.services,
+          ].join(' ').toLowerCase();
+          return searchable.contains(query);
+        }).toList()..sort((a, b) {
+          if (_latitude == null || _longitude == null) return 0;
+          return a
+              .distanceFrom(_latitude!, _longitude!)
+              .compareTo(b.distanceFrom(_latitude!, _longitude!));
+        });
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
+      children: [
+        Text(
+          'Encontrar atendimento',
+          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+            fontWeight: FontWeight.w800,
+            color: _ink,
+          ),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Encontre clínicas e profissionais parceiros do AuMiau por cidade ou proximidade.',
+          style: TextStyle(color: _muted, fontSize: 15, height: 1.35),
+        ),
+        const SizedBox(height: 18),
+        Card(
+          color: _forest,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.health_and_safety_outlined, color: _mango),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    'Em uma urgência ou emergência, procure atendimento veterinário imediato. O AuMiau não substitui avaliação profissional.',
+                    style: TextStyle(color: Colors.white, height: 1.35),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Meus profissionais',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: _ink,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            OutlinedButton.icon(
+              onPressed: widget.onAddVeterinaryContact,
+              icon: const Icon(Icons.person_add_alt_1_outlined),
+              label: const Text('Cadastrar'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (widget.veterinaryContacts.isEmpty)
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.contacts_outlined, color: _forest),
+              title: const Text('Nenhum profissional privado'),
+              subtitle: const Text(
+                'Cadastre seu veterinário ou clínica de confiança. Este cadastro fica somente para você.',
+              ),
+              onTap: widget.onAddVeterinaryContact,
+            ),
+          )
+        else
+          ...widget.veterinaryContacts.map(
+            (contact) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _VeterinaryContactCard(
+                contact: contact,
+                onOpenWhatsApp: () => _openWhatsApp(
+                  name: contact.name,
+                  phone: contact.whatsapp.isNotEmpty
+                      ? contact.whatsapp
+                      : contact.phone,
+                ),
+                onOpenMaps: () => _openContactMaps(contact),
+                onDelete: widget.onDeleteVeterinaryContact == null
+                    ? null
+                    : () => widget.onDeleteVeterinaryContact!(contact),
+              ),
+            ),
+          ),
+        const SizedBox(height: 14),
+        if (widget.appointments.isNotEmpty) ...[
+          Text(
+            'Meus atendimentos',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              color: _ink,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...widget.appointments
+              .take(3)
+              .map(
+                (appointment) => Card(
+                  child: ListTile(
+                    leading: const Icon(
+                      Icons.event_available_outlined,
+                      color: _forest,
+                    ),
+                    title: Text(appointment.service),
+                    subtitle: Text(
+                      '${appointment.partnerName} · ${_formatFullDate(appointment.scheduledAt)} · ${appointment.status == 'check_in' ? 'Check-in realizado' : 'Agendado'}',
+                    ),
+                    trailing: appointment.status == 'check_in'
+                        ? const Icon(Icons.check_circle, color: _forest)
+                        : TextButton(
+                            onPressed: widget.onCheckIn == null
+                                ? null
+                                : () => widget.onCheckIn!(appointment),
+                            child: const Text('Check-in'),
+                          ),
+                  ),
+                ),
+              ),
+          const SizedBox(height: 14),
+        ],
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _searchController,
+                  onChanged: (_) => setState(() {}),
+                  decoration: const InputDecoration(
+                    labelText: 'Pesquisar clínica, profissional ou cidade',
+                    prefixIcon: Icon(Icons.search),
+                    suffixIcon: Icon(Icons.tune),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _locating ? null : _useCurrentLocation,
+                        icon: Icon(
+                          _locating ? Icons.sync : Icons.my_location_outlined,
+                        ),
+                        label: Text(
+                          _locating ? 'Obtendo...' : 'Usar minha localização',
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Abrir pesquisa no Maps',
+                      onPressed: () async {
+                        final query = _latitude == null
+                            ? 'clínica veterinária perto de mim'
+                            : 'clínica veterinária perto de $_latitude,$_longitude';
+                        final uri = Uri.https(
+                          'www.google.com',
+                          '/maps/search/',
+                          {'api': '1', 'query': query},
+                        );
+                        await launchUrl(
+                          uri,
+                          mode: LaunchMode.externalApplication,
+                        );
+                      },
+                      icon: const Icon(Icons.map_outlined, color: _forest),
+                    ),
+                  ],
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  value: _urgencyOnly,
+                  onChanged: (value) {
+                    setState(() => _urgencyOnly = value);
+                    unawaited(_loadRemotePartners());
+                  },
+                  title: const Text('Mostrar apenas atendimento rápido'),
+                  subtitle: const Text(
+                    'A disponibilidade precisa ser confirmada com o parceiro.',
+                  ),
+                ),
+                if (_locationMessage != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      _locationMessage!,
+                      style: const TextStyle(color: _muted, fontSize: 12),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Card(
+          color: const Color(0xFFFFF7E6),
+          child: const Padding(
+            padding: EdgeInsets.all(14),
+            child: Text(
+              'Parceiros oficiais do AuMiau são cadastrados e validados pelo painel. Eles são diferentes dos profissionais privados cadastrados por você.',
+              style: TextStyle(color: _ink, height: 1.35),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (_loadingPartners) const LinearProgressIndicator(minHeight: 3),
+        if (_partnerLoadMessage != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            _partnerLoadMessage!,
+            style: const TextStyle(color: _muted, fontSize: 12),
+          ),
+        ],
+        if (partners.isEmpty)
+          const _EmptyState(
+            icon: Icons.location_off_outlined,
+            title: 'Nenhum parceiro oficial encontrado',
+            subtitle:
+                'Ainda não há parceiros publicados na sua região. Você pode cadastrar seu veterinário em Meus profissionais.',
+          )
+        else
+          ...partners.map(
+            (partner) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _PartnerCard(
+                partner: partner,
+                distanceKm: _latitude == null || _longitude == null
+                    ? null
+                    : partner.distanceFrom(_latitude!, _longitude!),
+                onOpenMaps: () => _openMaps(partner),
+                onOpenWhatsApp: () => _openWhatsApp(
+                  name: partner.name,
+                  phone: partner.whatsapp.isNotEmpty
+                      ? partner.whatsapp
+                      : partner.phone,
+                ),
+                onSchedule: widget.onSchedule == null
+                    ? null
+                    : () => widget.onSchedule!(partner),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _PartnerCard extends StatelessWidget {
+  const _PartnerCard({
+    required this.partner,
+    required this.distanceKm,
+    required this.onOpenMaps,
+    this.onOpenWhatsApp,
+    this.onSchedule,
+  });
+
+  final PartnerClinic partner;
+  final double? distanceKm;
+  final VoidCallback onOpenMaps;
+  final VoidCallback? onOpenWhatsApp;
+  final VoidCallback? onSchedule;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const CircleAvatar(
+                  backgroundColor: Color(0xFFE7F1EC),
+                  foregroundColor: _forest,
+                  child: Icon(Icons.local_hospital_outlined),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        partner.name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          color: _ink,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(partner.kind, style: const TextStyle(color: _muted)),
+                    ],
+                  ),
+                ),
+                if (partner.acceptsUrgency)
+                  const Chip(
+                    label: Text('Rápido'),
+                    avatar: Icon(Icons.bolt, size: 16),
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              partner.address,
+              style: const TextStyle(color: _ink, height: 1.3),
+            ),
+            if (distanceKm != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                distanceKm! < 1
+                    ? '${(distanceKm! * 1000).round()} m da sua localização'
+                    : '${distanceKm!.toStringAsFixed(1)} km da sua localização',
+                style: const TextStyle(color: _muted, fontSize: 13),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: partner.services
+                  .map((service) => Chip(label: Text(service)))
+                  .toList(),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onOpenMaps,
+                    icon: const Icon(Icons.directions_outlined),
+                    label: const Text('Abrir rota'),
+                  ),
+                ),
+                if (onOpenWhatsApp != null) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onOpenWhatsApp,
+                      icon: const Icon(Icons.chat_outlined),
+                      label: const Text('WhatsApp'),
+                    ),
+                  ),
+                ],
+                if (onSchedule != null) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: onSchedule,
+                      icon: const Icon(Icons.calendar_month_outlined),
+                      label: const Text('Agendar'),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _VeterinaryContactCard extends StatelessWidget {
+  const _VeterinaryContactCard({
+    required this.contact,
+    required this.onOpenWhatsApp,
+    required this.onOpenMaps,
+    this.onDelete,
+  });
+
+  final PrivateVeterinaryContact contact;
+  final VoidCallback onOpenWhatsApp;
+  final VoidCallback onOpenMaps;
+  final VoidCallback? onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final location = [
+      contact.address,
+      contact.city,
+      contact.state,
+    ].where((value) => value.trim().isNotEmpty).join(', ');
+    final subtitle = [
+      contact.kind,
+      contact.specialty,
+    ].where((value) => value.trim().isNotEmpty).join(' · ');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const CircleAvatar(
+                  backgroundColor: Color(0xFFFFF0C7),
+                  foregroundColor: _forest,
+                  child: Icon(Icons.person_outline),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        contact.name,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          color: _ink,
+                          fontSize: 16,
+                        ),
+                      ),
+                      if (subtitle.isNotEmpty)
+                        Text(subtitle, style: const TextStyle(color: _muted)),
+                    ],
+                  ),
+                ),
+                if (onDelete != null)
+                  IconButton(
+                    tooltip: 'Excluir contato privado',
+                    onPressed: onDelete,
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+              ],
+            ),
+            if (location.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text(location, style: const TextStyle(color: _ink)),
+            ],
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onOpenMaps,
+                    icon: const Icon(Icons.directions_outlined),
+                    label: const Text('Abrir rota'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: onOpenWhatsApp,
+                    icon: const Icon(Icons.chat_outlined),
+                    label: const Text('WhatsApp'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class ProfilePage extends StatelessWidget {
   const ProfilePage({
     super.key,
     this.profile,
     this.petCount = 2,
+    this.onOpenSubscription,
+    this.onOpenNotifications,
+    this.onOpenPrivacy,
+    this.onOpenHelp,
+    this.onOpenDeveloper,
+    this.onEditAddress,
+    this.pets = const [],
+    this.familyInvitations = const [],
+    this.onInviteFamily,
     this.pendingSyncCount = 0,
     this.onEdit,
     this.onSaveBackup,
@@ -3581,6 +7035,15 @@ class ProfilePage extends StatelessWidget {
 
   final LocalProfile? profile;
   final int petCount;
+  final VoidCallback? onOpenSubscription;
+  final VoidCallback? onOpenNotifications;
+  final VoidCallback? onOpenPrivacy;
+  final VoidCallback? onOpenHelp;
+  final VoidCallback? onOpenDeveloper;
+  final VoidCallback? onEditAddress;
+  final List<Pet> pets;
+  final List<FamilyInvitation> familyInvitations;
+  final VoidCallback? onInviteFamily;
   final int pendingSyncCount;
   final VoidCallback? onEdit;
   final VoidCallback? onSaveBackup;
@@ -3596,6 +7059,12 @@ class ProfilePage extends StatelessWidget {
     final initials = currentProfile.name.trim().isEmpty
         ? 'A'
         : currentProfile.name.trim().substring(0, 1).toUpperCase();
+    final familyValidUntil = currentProfile.familyValidUntil?.toLocal();
+    final familyExpiryLabel = familyValidUntil == null
+        ? null
+        : '${familyValidUntil.day.toString().padLeft(2, '0')}/'
+              '${familyValidUntil.month.toString().padLeft(2, '0')}/'
+              '${familyValidUntil.year}';
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 40),
       children: [
@@ -3667,7 +7136,7 @@ class ProfilePage extends StatelessWidget {
                     const Icon(Icons.auto_awesome, color: _mango),
                     const SizedBox(width: 8),
                     Text(
-                      'Plano gratuito',
+                      currentProfile.productPlan.displayName,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
@@ -3677,23 +7146,135 @@ class ProfilePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Você já está cuidando de $petCount pets. Desbloqueie recursos avançados do Plano Família.',
+                  currentProfile.isFreeOffline
+                      ? 'Você está cuidando de $petCount pet. No Family, você poderá cadastrar múltiplos pets e sincronizar seus dados.'
+                      : familyExpiryLabel == null
+                      ? 'Sua conta Family está ativa. Seus dados podem ser sincronizados com segurança.'
+                      : 'Sua conta Family está ativa até $familyExpiryLabel. Seus dados podem ser sincronizados com segurança.',
                   style: TextStyle(color: Colors.white70, height: 1.4),
                 ),
                 const SizedBox(height: 14),
                 FilledButton(
-                  onPressed: () => _showComingSoon(context),
+                  onPressed: currentProfile.isFreeOffline
+                      ? onOpenSubscription ?? () => _showComingSoon(context)
+                      : null,
                   style: FilledButton.styleFrom(
-                    backgroundColor: _mango,
-                    foregroundColor: _forestDark,
+                    backgroundColor: currentProfile.isFreeOffline
+                        ? _mango
+                        : Colors.white24,
+                    foregroundColor: currentProfile.isFreeOffline
+                        ? _forestDark
+                        : Colors.white70,
+                    disabledBackgroundColor: Colors.white24,
+                    disabledForegroundColor: Colors.white70,
                   ),
-                  child: const Text('Conhecer Plano Família'),
+                  child: Text(
+                    currentProfile.isFreeOffline
+                        ? 'Conhecer Plano Família'
+                        : 'Assinatura Family ativa',
+                  ),
                 ),
               ],
             ),
           ),
         ),
         const SizedBox(height: 16),
+        if (onEditAddress != null)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.location_on_outlined, color: _forest),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Endereço e localização',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: _ink,
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Cadastre o endereço manualmente. O GPS é opcional e só será usado com seu consentimento.',
+                    style: TextStyle(color: _muted, height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: onEditAddress,
+                    icon: const Icon(Icons.edit_location_alt_outlined),
+                    label: const Text('Cadastrar ou editar endereço'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (onEditAddress != null) const SizedBox(height: 16),
+        if (onInviteFamily != null) ...[
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.group_outlined, color: _forest),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Família e cuidadores',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(
+                              color: _ink,
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Convide uma pessoa de confiança e defina o que ela poderá visualizar ou registrar para cada pet.',
+                    style: TextStyle(color: _muted, height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  if (familyInvitations.isEmpty)
+                    const Text(
+                      'Nenhum convite pendente.',
+                      style: TextStyle(color: _muted),
+                    )
+                  else
+                    ...familyInvitations
+                        .take(3)
+                        .map(
+                          (invitation) => ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(
+                              Icons.mail_outline,
+                              color: _forest,
+                            ),
+                            title: Text(invitation.email),
+                            subtitle: Text(
+                              '${pets.any((pet) => pet.id == invitation.petId) ? pets.firstWhere((pet) => pet.id == invitation.petId).name : 'Pet'} · ${invitation.role} · ${invitation.status}',
+                            ),
+                          ),
+                        ),
+                  OutlinedButton.icon(
+                    onPressed: onInviteFamily,
+                    icon: const Icon(Icons.person_add_alt_1_outlined),
+                    label: const Text('Convidar familiar ou cuidador'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         Card(
           child: Padding(
             padding: const EdgeInsets.all(18),
@@ -3794,21 +7375,30 @@ class ProfilePage extends StatelessWidget {
         const SizedBox(height: 16),
         Card(
           child: Column(
-            children: const [
+            children: [
               _SettingsTile(
                 icon: Icons.notifications_none,
                 title: 'Notificações',
                 subtitle: 'Lembretes locais e preferências',
+                onTap: onOpenNotifications,
               ),
               _SettingsTile(
                 icon: Icons.security_outlined,
                 title: 'Privacidade e dados',
-                subtitle: 'Controle e exclusão da sua conta',
+                subtitle: 'Uso, backup e segurança dos dados',
+                onTap: onOpenPrivacy,
               ),
               _SettingsTile(
                 icon: Icons.help_outline,
                 title: 'Ajuda',
                 subtitle: 'Fale com o suporte AuMiau',
+                onTap: onOpenHelp,
+              ),
+              _SettingsTile(
+                icon: Icons.business_outlined,
+                title: 'Desenvolvedor',
+                subtitle: 'C.A. Informática • AuMiau',
+                onTap: onOpenDeveloper,
               ),
             ],
           ),
@@ -3932,8 +7522,9 @@ class ReminderCard extends StatelessWidget {
 }
 
 class _TopHeader extends StatelessWidget {
-  const _TopHeader({required this.today});
+  const _TopHeader({required this.today, this.isFamily = false});
   final DateTime today;
+  final bool isFamily;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -3979,9 +7570,9 @@ class _TopHeader extends StatelessWidget {
             borderRadius: BorderRadius.circular(30),
             border: Border.all(color: _mango.withValues(alpha: .45)),
           ),
-          child: const Text(
-            'PLANO GRATUITO',
-            style: TextStyle(
+          child: Text(
+            isFamily ? 'FAMILY ATIVO' : 'PLANO GRATUITO',
+            style: const TextStyle(
               color: _mango,
               fontWeight: FontWeight.w800,
               fontSize: 10,
@@ -4051,7 +7642,12 @@ class _PetCard extends StatelessWidget {
                 CircleAvatar(
                   radius: 29,
                   backgroundColor: _mango.withValues(alpha: .3),
-                  child: Text(pet.emoji, style: const TextStyle(fontSize: 31)),
+                  backgroundImage: pet.photoData == null
+                      ? null
+                      : MemoryImage(base64Decode(pet.photoData!)),
+                  child: pet.photoData == null
+                      ? Text(pet.emoji, style: const TextStyle(fontSize: 31))
+                      : null,
                 ),
                 const SizedBox(width: 13),
                 Expanded(
@@ -4071,6 +7667,50 @@ class _PetCard extends StatelessWidget {
                         '${pet.species} · ${pet.breed}',
                         style: const TextStyle(color: _muted),
                       ),
+                      if (pet.birthDate != null ||
+                          pet.sex.isNotEmpty ||
+                          pet.color.isNotEmpty)
+                        Text(
+                          [
+                            if (pet.birthDate != null)
+                              'Nasc. ${_formatFullDate(pet.birthDate!)}',
+                            if (pet.sex.isNotEmpty) pet.sex,
+                            if (pet.color.isNotEmpty) pet.color,
+                          ].join(' · '),
+                          style: const TextStyle(color: _muted, fontSize: 12),
+                        ),
+                      if (pet.hasPedigree || pet.microchip?.isNotEmpty == true)
+                        Text(
+                          [
+                            if (pet.hasPedigree) 'Pedigree',
+                            if (pet.microchip?.isNotEmpty == true) 'Microchip',
+                          ].join(' · '),
+                          style: const TextStyle(
+                            color: _forest,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      if (pet.size.isNotEmpty ||
+                          pet.reproductiveStatus.isNotEmpty ||
+                          pet.bodyConditionScore != null)
+                        Text(
+                          [
+                            if (pet.size.isNotEmpty) 'Porte: ${pet.size}',
+                            if (pet.reproductiveStatus.isNotEmpty)
+                              pet.reproductiveStatus,
+                            if (pet.bodyConditionScore != null)
+                              'Escore ${pet.bodyConditionScore!.toStringAsFixed(1)}',
+                          ].join(' · '),
+                          style: const TextStyle(color: _muted, fontSize: 12),
+                        ),
+                      if (pet.characteristics.isNotEmpty)
+                        Text(
+                          pet.characteristics,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: _muted, fontSize: 12),
+                        ),
                       if (pet.allergies.isNotEmpty)
                         Text(
                           'Atenção: ${pet.allergies}',
@@ -4079,6 +7719,19 @@ class _PetCard extends StatelessWidget {
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
                           ),
+                        ),
+                      if (pet.clinicReference.isNotEmpty ||
+                          pet.veterinarianReference.isNotEmpty)
+                        Text(
+                          [
+                            if (pet.clinicReference.isNotEmpty)
+                              'Clínica: ${pet.clinicReference}',
+                            if (pet.veterinarianReference.isNotEmpty)
+                              'Vet.: ${pet.veterinarianReference}',
+                          ].join(' · '),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: _forest, fontSize: 12),
                         ),
                     ],
                   ),
@@ -4474,12 +8127,15 @@ class _SettingsTile extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.subtitle,
+    this.onTap,
   });
   final IconData icon;
   final String title;
   final String subtitle;
+  final VoidCallback? onTap;
   @override
   Widget build(BuildContext context) => ListTile(
+    onTap: onTap,
     leading: Icon(icon, color: _forest),
     title: Text(
       title,
@@ -4573,8 +8229,22 @@ class _ChartPainter extends CustomPainter {
 bool _sameDay(DateTime a, DateTime b) =>
     a.year == b.year && a.month == b.month && a.day == b.day;
 
+String _firstAndLastName(String value) {
+  final parts = value
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((part) => part.isNotEmpty)
+      .toList();
+  if (parts.length < 2 || parts.any((part) => part.contains('@'))) return '';
+  return '${parts.first} ${parts.last}';
+}
+
 String _formatDate(DateTime date) =>
     '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}';
+
+String _formatFullDate(DateTime date) =>
+    '${date.day.toString().padLeft(2, '0')}/'
+    '${date.month.toString().padLeft(2, '0')}/${date.year}';
 
 String _formatLongDate(DateTime date) {
   const weekdays = [

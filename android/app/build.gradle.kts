@@ -59,6 +59,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Mantém o APK de teste instalável ao lado da versão publicada,
+            // sem apagar os dados do aplicativo de produção.
+            applicationIdSuffix = ".debug"
+        }
         release {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
