@@ -114,6 +114,77 @@ class NotificationService {
     );
   }
 
+  Future<bool> requestPermission() async {
+    if (kIsWeb) return false;
+    await initialize();
+    if (!_initialized) return false;
+    final granted = await _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.requestNotificationsPermission();
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin
+        >()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
+    return granted ?? true;
+  }
+
+  Future<void> showTestNotification() async {
+    if (kIsWeb) return;
+    await initialize();
+    if (!_initialized) return;
+    await _plugin.show(
+      id: 9101,
+      title: 'Notificações do AuMiau ativas',
+      body: 'Você receberá lembretes de cuidados e avisos importantes.',
+      notificationDetails: _details,
+      payload: 'notification-test',
+    );
+  }
+
+  Future<void> scheduleFamilyExpiryWarning({
+    required DateTime? validUntil,
+  }) async {
+    if (kIsWeb) return;
+    await initialize();
+    if (!_initialized) return;
+
+    const notificationId = 9100;
+    await _plugin.cancel(id: notificationId);
+    if (validUntil == null) return;
+
+    final expiry = validUntil.toLocal();
+    final warning = _atHour(expiry.subtract(const Duration(days: 5)), 9);
+    final now = tz.TZDateTime.now(tz.local);
+    if (warning.isAfter(now)) {
+      await _plugin.zonedSchedule(
+        id: notificationId,
+        title: 'Sua assinatura Family está perto do vencimento',
+        body:
+            'Faltam 5 dias para o vencimento. Renove para continuar usando todos os recursos.',
+        scheduledDate: warning,
+        notificationDetails: _subscriptionDetails,
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        payload: 'family-expiry',
+      );
+      return;
+    }
+
+    if (expiry.isAfter(DateTime.now())) {
+      final daysLeft = expiry.difference(DateTime.now()).inDays.clamp(1, 5);
+      await _plugin.show(
+        id: notificationId,
+        title: 'Sua assinatura Family está perto do vencimento',
+        body:
+            'Faltam $daysLeft dias para o vencimento. Renove para continuar usando todos os recursos.',
+        notificationDetails: _subscriptionDetails,
+        payload: 'family-expiry',
+      );
+    }
+  }
+
   tz.TZDateTime _atHour(DateTime date, int hour) =>
       tz.TZDateTime(tz.local, date.year, date.month, date.day, hour);
 
@@ -146,6 +217,26 @@ class NotificationService {
       'aumiau_atualizacoes',
       'Atualizações do AuMiau',
       channelDescription: 'Avisos de novas versões do aplicativo.',
+      importance: Importance.high,
+      priority: Priority.high,
+    ),
+    iOS: DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    ),
+    macOS: DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    ),
+  );
+
+  static const _subscriptionDetails = NotificationDetails(
+    android: AndroidNotificationDetails(
+      'aumiau_assinatura',
+      'Assinatura AuMiau Family',
+      channelDescription: 'Avisos sobre o vencimento da assinatura Family.',
       importance: Importance.high,
       priority: Priority.high,
     ),

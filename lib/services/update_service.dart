@@ -2,10 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
 
 const currentAppVersion = String.fromEnvironment(
   'AUMIAU_APP_VERSION',
-  defaultValue: '0.1.0',
+  defaultValue: '0.4.2',
 );
 
 class UpdateInfo {
@@ -43,17 +44,26 @@ class UpdateService {
           )
           .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return null;
-      return parseRelease(jsonDecode(response.body) as Map<String, dynamic>);
+      final packageInfo = await PackageInfo.fromPlatform();
+      return parseRelease(
+        jsonDecode(response.body) as Map<String, dynamic>,
+        currentVersion: packageInfo.version,
+      );
     } on Object {
       return null;
     }
   }
 
-  UpdateInfo? parseRelease(Map<String, dynamic> release) {
+  UpdateInfo? parseRelease(
+    Map<String, dynamic> release, {
+    String? currentVersion,
+  }) {
     final tag = (release['tag_name'] as String?)?.trim() ?? '';
     final version = tag.startsWith('v') ? tag.substring(1) : tag;
     final releaseUrl = (release['html_url'] as String?)?.trim() ?? '';
-    if (version.isEmpty || releaseUrl.isEmpty || !_isNewer(version)) {
+    if (version.isEmpty ||
+        releaseUrl.isEmpty ||
+        !_isNewer(version, currentVersion: currentVersion)) {
       return null;
     }
 
@@ -76,8 +86,8 @@ class UpdateService {
     );
   }
 
-  bool _isNewer(String remoteVersion) =>
-      _compareVersions(remoteVersion, currentAppVersion) > 0;
+  bool _isNewer(String remoteVersion, {String? currentVersion}) =>
+      _compareVersions(remoteVersion, currentVersion ?? currentAppVersion) > 0;
 
   static int compareVersions(String left, String right) =>
       _compareVersions(left, right);

@@ -1,5 +1,22 @@
 # AuMiau API
 
+## Family, parceiros e atendimentos
+
+O backend mantém os recursos comerciais do Family no PostgreSQL, sem depender
+do banco local do celular.
+
+- `GET/POST /family/invitations`: lista e cria convites por e-mail, pet, papel e permissões.
+- `POST /family/invitations/{id}/accept`: aceita o convite somente para o e-mail autenticado do destinatário.
+- `DELETE /family/invitations/{id}`: cancela um convite pendente.
+- `GET /family/access`: lista os acessos ativos por pet.
+- `GET /partners`: busca parceiros ativos por localização, serviço e urgência.
+- `POST /admin/partners` e `PATCH /admin/partners/{id}/status`: cadastro e moderação administrativa.
+- `GET/POST /appointments`: consulta e solicita atendimentos Family.
+- `PATCH /appointments/{id}/status`: confirma, cancela, faz check-in ou conclui um atendimento.
+
+Os endpoints de família e atendimento exigem entitlement `family_access` ativo.
+A localização só é filtrada quando o usuário fornece latitude e longitude; o backend não coleta localização continuamente.
+
 Backend inicial do contrato de sincronização v1 do aplicativo.
 
 ## Serviços

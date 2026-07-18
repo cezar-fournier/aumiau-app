@@ -13,6 +13,21 @@ class Pets extends Table {
   TextColumn get emoji => text().withDefault(const Constant('🐾'))();
   RealColumn get weight => real().withDefault(const Constant(0.0))();
   TextColumn get allergies => text().withDefault(const Constant(''))();
+  DateTimeColumn get birthDate => dateTime().nullable()();
+  TextColumn get sex => text().withDefault(const Constant(''))();
+  TextColumn get color => text().withDefault(const Constant(''))();
+  TextColumn get characteristics => text().withDefault(const Constant(''))();
+  BoolColumn get hasPedigree => boolean().withDefault(const Constant(false))();
+  TextColumn get pedigreeNumber => text().nullable()();
+  TextColumn get microchip => text().nullable()();
+  TextColumn get size => text().withDefault(const Constant(''))();
+  TextColumn get reproductiveStatus => text().withDefault(const Constant(''))();
+  RealColumn get bodyConditionScore => real().nullable()();
+  TextColumn get clinicReference => text().withDefault(const Constant(''))();
+  TextColumn get veterinarianReference =>
+      text().withDefault(const Constant(''))();
+  TextColumn get documentNotes => text().withDefault(const Constant(''))();
+  TextColumn get photoData => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
 
@@ -40,6 +55,71 @@ class Vaccines extends Table {
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
 
+class PreventiveRecords extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get petId => integer().references(Pets, #id)();
+  TextColumn get category => text().withLength(min: 1, max: 80)();
+  TextColumn get product => text().withLength(min: 1, max: 140)();
+  DateTimeColumn get appliedAt => dateTime()();
+  DateTimeColumn get nextDueAt => dateTime().nullable()();
+  TextColumn get provider => text().nullable()();
+  TextColumn get notes => text().nullable()();
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+}
+
+class MedicationPlans extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get petId => integer().references(Pets, #id)();
+  TextColumn get name => text().withLength(min: 1, max: 140)();
+  TextColumn get dosage => text().withLength(min: 1, max: 100)();
+  TextColumn get schedule => text().withLength(min: 1, max: 120)();
+  DateTimeColumn get startAt => dateTime()();
+  DateTimeColumn get endAt => dateTime().nullable()();
+  BoolColumn get active => boolean().withDefault(const Constant(true))();
+  DateTimeColumn get lastTakenAt => dateTime().nullable()();
+  TextColumn get notes => text().nullable()();
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+}
+
+class FamilyInvitations extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get petId => integer().references(Pets, #id)();
+  TextColumn get email => text().withLength(min: 3, max: 180)();
+  TextColumn get role => text().withLength(min: 1, max: 40)();
+  TextColumn get permissions => text().withDefault(const Constant('saude'))();
+  TextColumn get status => text().withDefault(const Constant('pendente'))();
+  DateTimeColumn get expiresAt => dateTime()();
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+}
+
+class Appointments extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  IntColumn get petId => integer().references(Pets, #id)();
+  TextColumn get partnerName => text().withLength(min: 1, max: 160)();
+  TextColumn get service => text().withLength(min: 1, max: 120)();
+  DateTimeColumn get scheduledAt => dateTime()();
+  TextColumn get status => text().withDefault(const Constant('agendado'))();
+  TextColumn get notes => text().nullable()();
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+}
+
+class VeterinaryContacts extends Table {
+  IntColumn get id => integer().autoIncrement()();
+  TextColumn get name => text().withLength(min: 2, max: 160)();
+  TextColumn get kind => text().withDefault(const Constant('Veterinário'))();
+  TextColumn get specialty => text().withDefault(const Constant(''))();
+  TextColumn get phone => text().withDefault(const Constant(''))();
+  TextColumn get whatsapp => text().withDefault(const Constant(''))();
+  TextColumn get address => text().withDefault(const Constant(''))();
+  TextColumn get city => text().withDefault(const Constant(''))();
+  TextColumn get state => text().withDefault(const Constant(''))();
+  TextColumn get notes => text().withDefault(const Constant(''))();
+  RealColumn get latitude => real().nullable()();
+  RealColumn get longitude => real().nullable()();
+  DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+  DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
+}
+
 class WeightEntries extends Table {
   IntColumn get id => integer().autoIncrement()();
   IntColumn get petId => integer().references(Pets, #id)();
@@ -54,6 +134,7 @@ class UserProfiles extends Table {
   TextColumn get name => text().withLength(min: 1, max: 100)();
   TextColumn get email => text().withLength(min: 3, max: 180)();
   TextColumn get plan => text().withDefault(const Constant('free_offline'))();
+  DateTimeColumn get familyValidUntil => dateTime().nullable()();
   DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
 }
 
@@ -72,6 +153,11 @@ class SyncOperations extends Table {
     Pets,
     Reminders,
     Vaccines,
+    PreventiveRecords,
+    MedicationPlans,
+    FamilyInvitations,
+    Appointments,
+    VeterinaryContacts,
     WeightEntries,
     UserProfiles,
     SyncOperations,
@@ -95,7 +181,7 @@ final class AppDatabase extends _$AppDatabase {
   final bool seedDemoData;
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 10;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -135,6 +221,40 @@ final class AppDatabase extends _$AppDatabase {
             ),
           );
         }
+      }
+      if (from < 4) {
+        await m.addColumn(pets, pets.birthDate);
+        await m.addColumn(pets, pets.sex);
+        await m.addColumn(pets, pets.color);
+        await m.addColumn(pets, pets.characteristics);
+        await m.addColumn(pets, pets.hasPedigree);
+        await m.addColumn(pets, pets.pedigreeNumber);
+        await m.addColumn(pets, pets.microchip);
+      }
+      if (from < 5) {
+        await m.addColumn(pets, pets.size);
+        await m.addColumn(pets, pets.reproductiveStatus);
+        await m.addColumn(pets, pets.bodyConditionScore);
+        await m.addColumn(pets, pets.clinicReference);
+        await m.addColumn(pets, pets.veterinarianReference);
+        await m.addColumn(pets, pets.documentNotes);
+      }
+      if (from < 6) {
+        await m.addColumn(pets, pets.photoData);
+      }
+      if (from < 7) {
+        await m.createTable(preventiveRecords);
+        await m.createTable(medicationPlans);
+        await m.createTable(familyInvitations);
+      }
+      if (from < 8) {
+        await m.createTable(appointments);
+      }
+      if (from < 9) {
+        await m.addColumn(userProfiles, userProfiles.familyValidUntil);
+      }
+      if (from < 10) {
+        await m.createTable(veterinaryContacts);
       }
     },
   );
@@ -259,6 +379,26 @@ final class AppDatabase extends _$AppDatabase {
 
   Future<List<Vaccine>> loadVaccines() => select(vaccines).get();
 
+  Future<List<PreventiveRecord>> loadPreventiveRecords() => (select(
+    preventiveRecords,
+  )..orderBy([(row) => OrderingTerm.desc(row.appliedAt)])).get();
+
+  Future<List<MedicationPlan>> loadMedicationPlans() => (select(
+    medicationPlans,
+  )..orderBy([(row) => OrderingTerm.desc(row.startAt)])).get();
+
+  Future<List<FamilyInvitation>> loadFamilyInvitations() => (select(
+    familyInvitations,
+  )..orderBy([(row) => OrderingTerm.desc(row.createdAt)])).get();
+
+  Future<List<Appointment>> loadAppointments() => (select(
+    appointments,
+  )..orderBy([(row) => OrderingTerm.asc(row.scheduledAt)])).get();
+
+  Future<List<VeterinaryContact>> loadVeterinaryContacts() => (select(
+    veterinaryContacts,
+  )..orderBy([(row) => OrderingTerm.asc(row.name)])).get();
+
   Future<List<WeightEntry>> loadWeights() => (select(
     weightEntries,
   )..orderBy([(row) => OrderingTerm.desc(row.measuredAt)])).get();
@@ -283,6 +423,8 @@ final class AppDatabase extends _$AppDatabase {
     required String name,
     required String email,
     String? plan,
+    DateTime? familyValidUntil,
+    bool preserveFamilyValidUntil = true,
   }) async {
     final profile = await loadProfile();
     if (profile == null) {
@@ -291,6 +433,7 @@ final class AppDatabase extends _$AppDatabase {
           name: name,
           email: email,
           plan: Value(plan ?? 'free_offline'),
+          familyValidUntil: Value(familyValidUntil),
         ),
       );
       await _recordSync('profile', id, 'upsert');
@@ -303,6 +446,9 @@ final class AppDatabase extends _$AppDatabase {
         name: Value(name),
         email: Value(email),
         plan: plan == null ? const Value.absent() : Value(plan),
+        familyValidUntil: preserveFamilyValidUntil
+            ? const Value.absent()
+            : Value(familyValidUntil),
         updatedAt: Value(DateTime.now()),
       ),
     );
@@ -314,6 +460,22 @@ final class AppDatabase extends _$AppDatabase {
     required String species,
     required String breed,
     required String emoji,
+    DateTime? birthDate,
+    String sex = '',
+    String color = '',
+    String characteristics = '',
+    bool hasPedigree = false,
+    String? pedigreeNumber,
+    String? microchip,
+    String size = '',
+    String reproductiveStatus = '',
+    double? bodyConditionScore,
+    String clinicReference = '',
+    String veterinarianReference = '',
+    String documentNotes = '',
+    String? photoData,
+    double weight = 0,
+    String allergies = '',
   }) async {
     final id = await into(pets).insert(
       PetsCompanion.insert(
@@ -321,6 +483,22 @@ final class AppDatabase extends _$AppDatabase {
         species: species,
         breed: breed,
         emoji: Value(emoji),
+        birthDate: Value(birthDate),
+        sex: Value(sex),
+        color: Value(color),
+        characteristics: Value(characteristics),
+        hasPedigree: Value(hasPedigree),
+        pedigreeNumber: Value(pedigreeNumber),
+        microchip: Value(microchip),
+        size: Value(size),
+        reproductiveStatus: Value(reproductiveStatus),
+        bodyConditionScore: Value(bodyConditionScore),
+        clinicReference: Value(clinicReference),
+        veterinarianReference: Value(veterinarianReference),
+        documentNotes: Value(documentNotes),
+        photoData: Value(photoData),
+        weight: Value(weight),
+        allergies: Value(allergies),
       ),
     );
     await _recordSync('pet', id, 'create');
@@ -389,6 +567,175 @@ final class AppDatabase extends _$AppDatabase {
     return id;
   }
 
+  Future<int> addPreventive({
+    required int petId,
+    required String category,
+    required String product,
+    required DateTime appliedAt,
+    DateTime? nextDueAt,
+    String? provider,
+    String? notes,
+  }) async {
+    final id = await into(preventiveRecords).insert(
+      PreventiveRecordsCompanion.insert(
+        petId: petId,
+        category: category,
+        product: product,
+        appliedAt: appliedAt,
+        nextDueAt: Value(nextDueAt),
+        provider: Value(provider),
+        notes: Value(notes),
+      ),
+    );
+    await _recordSync('preventive', id, 'create');
+    return id;
+  }
+
+  Future<int> addMedicationPlan({
+    required int petId,
+    required String name,
+    required String dosage,
+    required String schedule,
+    required DateTime startAt,
+    DateTime? endAt,
+    String? notes,
+  }) async {
+    final id = await into(medicationPlans).insert(
+      MedicationPlansCompanion.insert(
+        petId: petId,
+        name: name,
+        dosage: dosage,
+        schedule: schedule,
+        startAt: startAt,
+        endAt: Value(endAt),
+        notes: Value(notes),
+      ),
+    );
+    await _recordSync('medication', id, 'create');
+    return id;
+  }
+
+  Future<void> markMedicationTaken(int id) async {
+    await (update(medicationPlans)..where((row) => row.id.equals(id))).write(
+      MedicationPlansCompanion(lastTakenAt: Value(DateTime.now())),
+    );
+    await _recordSync('medication', id, 'taken');
+  }
+
+  Future<int> addFamilyInvitation({
+    required int petId,
+    required String email,
+    required String role,
+    required String permissions,
+    required DateTime expiresAt,
+  }) async {
+    final id = await into(familyInvitations).insert(
+      FamilyInvitationsCompanion.insert(
+        petId: petId,
+        email: email,
+        role: role,
+        permissions: Value(permissions),
+        expiresAt: expiresAt,
+      ),
+    );
+    await _recordSync('family_invitation', id, 'create');
+    return id;
+  }
+
+  Future<int> addAppointment({
+    required int petId,
+    required String partnerName,
+    required String service,
+    required DateTime scheduledAt,
+    String? notes,
+  }) async {
+    final id = await into(appointments).insert(
+      AppointmentsCompanion.insert(
+        petId: petId,
+        partnerName: partnerName,
+        service: service,
+        scheduledAt: scheduledAt,
+        notes: Value(notes),
+      ),
+    );
+    await _recordSync('appointment', id, 'create');
+    return id;
+  }
+
+  Future<void> updateAppointmentStatus(int id, String status) async {
+    await (update(appointments)..where((row) => row.id.equals(id))).write(
+      AppointmentsCompanion(status: Value(status)),
+    );
+    await _recordSync('appointment', id, 'status');
+  }
+
+  Future<int> addVeterinaryContact({
+    required String name,
+    required String kind,
+    String specialty = '',
+    String phone = '',
+    String whatsapp = '',
+    String address = '',
+    String city = '',
+    String state = '',
+    String notes = '',
+    double? latitude,
+    double? longitude,
+  }) async {
+    final id = await into(veterinaryContacts).insert(
+      VeterinaryContactsCompanion.insert(
+        name: name.trim(),
+        kind: Value(kind.trim().isEmpty ? 'Veterinário' : kind.trim()),
+        specialty: Value(specialty.trim()),
+        phone: Value(phone.trim()),
+        whatsapp: Value(whatsapp.trim()),
+        address: Value(address.trim()),
+        city: Value(city.trim()),
+        state: Value(state.trim()),
+        notes: Value(notes.trim()),
+        latitude: Value(latitude),
+        longitude: Value(longitude),
+      ),
+    );
+    await _recordSync('veterinary_contact', id, 'create');
+    return id;
+  }
+
+  Future<void> deleteVeterinaryContact(int id) async {
+    await (delete(veterinaryContacts)..where((row) => row.id.equals(id))).go();
+    await _recordSync('veterinary_contact', id, 'delete');
+  }
+
+  Future<int> importVeterinaryContact({
+    required String name,
+    required String kind,
+    String specialty = '',
+    String phone = '',
+    String whatsapp = '',
+    String address = '',
+    String city = '',
+    String state = '',
+    String notes = '',
+    double? latitude,
+    double? longitude,
+  }) {
+    return into(veterinaryContacts).insert(
+      VeterinaryContactsCompanion.insert(
+        name: name.trim(),
+        kind: Value(kind.trim().isEmpty ? 'Veterinário' : kind.trim()),
+        specialty: Value(specialty.trim()),
+        phone: Value(phone.trim()),
+        whatsapp: Value(whatsapp.trim()),
+        address: Value(address.trim()),
+        city: Value(city.trim()),
+        state: Value(state.trim()),
+        notes: Value(notes.trim()),
+        latitude: Value(latitude),
+        longitude: Value(longitude),
+      ),
+    );
+  }
+
   Future<void> updateReminderTitle(int id, String title) async {
     await (update(reminders)..where((row) => row.id.equals(id))).write(
       RemindersCompanion(title: Value(title)),
@@ -424,6 +771,16 @@ final class AppDatabase extends _$AppDatabase {
     await transaction(() async {
       await (delete(reminders)..where((row) => row.petId.equals(id))).go();
       await (delete(vaccines)..where((row) => row.petId.equals(id))).go();
+      await (delete(
+        preventiveRecords,
+      )..where((row) => row.petId.equals(id))).go();
+      await (delete(
+        medicationPlans,
+      )..where((row) => row.petId.equals(id))).go();
+      await (delete(
+        familyInvitations,
+      )..where((row) => row.petId.equals(id))).go();
+      await (delete(appointments)..where((row) => row.petId.equals(id))).go();
       await (delete(weightEntries)..where((row) => row.petId.equals(id))).go();
       await (delete(pets)..where((row) => row.id.equals(id))).go();
     });
@@ -445,6 +802,11 @@ final class AppDatabase extends _$AppDatabase {
     final databasePets = await loadPets();
     final databaseReminders = await loadReminders();
     final databaseVaccines = await loadVaccines();
+    final databasePreventives = await loadPreventiveRecords();
+    final databaseMedications = await loadMedicationPlans();
+    final databaseInvitations = await loadFamilyInvitations();
+    final databaseAppointments = await loadAppointments();
+    final databaseVeterinaryContacts = await loadVeterinaryContacts();
     final databaseWeights = await loadWeights();
 
     return {
@@ -458,6 +820,7 @@ final class AppDatabase extends _$AppDatabase {
               'name': profile.name,
               'email': profile.email,
               'plan': profile.plan,
+              'familyValidUntil': profile.familyValidUntil?.toIso8601String(),
               'updatedAt': profile.updatedAt.toIso8601String(),
             },
       'pets': databasePets
@@ -470,6 +833,20 @@ final class AppDatabase extends _$AppDatabase {
               'emoji': pet.emoji,
               'weight': pet.weight,
               'allergies': pet.allergies,
+              'birthDate': pet.birthDate?.toIso8601String(),
+              'sex': pet.sex,
+              'color': pet.color,
+              'characteristics': pet.characteristics,
+              'hasPedigree': pet.hasPedigree,
+              'pedigreeNumber': pet.pedigreeNumber,
+              'microchip': pet.microchip,
+              'size': pet.size,
+              'reproductiveStatus': pet.reproductiveStatus,
+              'bodyConditionScore': pet.bodyConditionScore,
+              'clinicReference': pet.clinicReference,
+              'veterinarianReference': pet.veterinarianReference,
+              'documentNotes': pet.documentNotes,
+              'photoData': pet.photoData,
               'createdAt': pet.createdAt.toIso8601String(),
             },
           )
@@ -504,6 +881,86 @@ final class AppDatabase extends _$AppDatabase {
             },
           )
           .toList(),
+      'preventives': databasePreventives
+          .map(
+            (record) => {
+              'id': record.id,
+              'petId': record.petId,
+              'category': record.category,
+              'product': record.product,
+              'appliedAt': record.appliedAt.toIso8601String(),
+              'nextDueAt': record.nextDueAt?.toIso8601String(),
+              'provider': record.provider,
+              'notes': record.notes,
+              'createdAt': record.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'medications': databaseMedications
+          .map(
+            (medication) => {
+              'id': medication.id,
+              'petId': medication.petId,
+              'name': medication.name,
+              'dosage': medication.dosage,
+              'schedule': medication.schedule,
+              'startAt': medication.startAt.toIso8601String(),
+              'endAt': medication.endAt?.toIso8601String(),
+              'active': medication.active,
+              'lastTakenAt': medication.lastTakenAt?.toIso8601String(),
+              'notes': medication.notes,
+              'createdAt': medication.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'familyInvitations': databaseInvitations
+          .map(
+            (invitation) => {
+              'id': invitation.id,
+              'petId': invitation.petId,
+              'email': invitation.email,
+              'role': invitation.role,
+              'permissions': invitation.permissions,
+              'status': invitation.status,
+              'expiresAt': invitation.expiresAt.toIso8601String(),
+              'createdAt': invitation.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'appointments': databaseAppointments
+          .map(
+            (appointment) => {
+              'id': appointment.id,
+              'petId': appointment.petId,
+              'partnerName': appointment.partnerName,
+              'service': appointment.service,
+              'scheduledAt': appointment.scheduledAt.toIso8601String(),
+              'status': appointment.status,
+              'notes': appointment.notes,
+              'createdAt': appointment.createdAt.toIso8601String(),
+            },
+          )
+          .toList(),
+      'veterinaryContacts': databaseVeterinaryContacts
+          .map(
+            (contact) => {
+              'id': contact.id,
+              'name': contact.name,
+              'kind': contact.kind,
+              'specialty': contact.specialty,
+              'phone': contact.phone,
+              'whatsapp': contact.whatsapp,
+              'address': contact.address,
+              'city': contact.city,
+              'state': contact.state,
+              'notes': contact.notes,
+              'latitude': contact.latitude,
+              'longitude': contact.longitude,
+              'createdAt': contact.createdAt.toIso8601String(),
+              'updatedAt': contact.updatedAt.toIso8601String(),
+            },
+          )
+          .toList(),
       'weights': databaseWeights
           .map(
             (weight) => {
@@ -526,6 +983,13 @@ final class AppDatabase extends _$AppDatabase {
     final petsData = _mapList(snapshot['pets']);
     final remindersData = _mapList(snapshot['reminders']);
     final vaccinesData = _mapList(snapshot['vaccines']);
+    final preventivesData = _optionalMapList(snapshot['preventives']);
+    final medicationsData = _optionalMapList(snapshot['medications']);
+    final invitationsData = _optionalMapList(snapshot['familyInvitations']);
+    final appointmentsData = _optionalMapList(snapshot['appointments']);
+    final veterinaryContactsData = _optionalMapList(
+      snapshot['veterinaryContacts'],
+    );
     final weightsData = _mapList(snapshot['weights']);
     final profileData = snapshot['profile'] is Map
         ? Map<String, dynamic>.from(snapshot['profile'] as Map)
@@ -535,6 +999,11 @@ final class AppDatabase extends _$AppDatabase {
       await delete(syncOperations).go();
       await delete(weightEntries).go();
       await delete(vaccines).go();
+      await delete(preventiveRecords).go();
+      await delete(medicationPlans).go();
+      await delete(familyInvitations).go();
+      await delete(appointments).go();
+      await delete(veterinaryContacts).go();
       await delete(reminders).go();
       await delete(pets).go();
       await delete(userProfiles).go();
@@ -546,6 +1015,9 @@ final class AppDatabase extends _$AppDatabase {
             name: _string(profileData['name']),
             email: _string(profileData['email']),
             plan: Value(_string(profileData['plan'], fallback: 'free_offline')),
+            familyValidUntil: Value(
+              _nullableDate(profileData['familyValidUntil']),
+            ),
             updatedAt: Value(_date(profileData['updatedAt'])),
           ),
         );
@@ -564,6 +1036,24 @@ final class AppDatabase extends _$AppDatabase {
                   emoji: Value(_string(pet['emoji'], fallback: '🐾')),
                   weight: Value(_double(pet['weight'])),
                   allergies: Value(_string(pet['allergies'])),
+                  birthDate: Value(_nullableDate(pet['birthDate'])),
+                  sex: Value(_string(pet['sex'])),
+                  color: Value(_string(pet['color'])),
+                  characteristics: Value(_string(pet['characteristics'])),
+                  hasPedigree: Value(_bool(pet['hasPedigree'])),
+                  pedigreeNumber: Value(_nullableString(pet['pedigreeNumber'])),
+                  microchip: Value(_nullableString(pet['microchip'])),
+                  size: Value(_string(pet['size'])),
+                  reproductiveStatus: Value(_string(pet['reproductiveStatus'])),
+                  bodyConditionScore: Value(
+                    _nullableDouble(pet['bodyConditionScore']),
+                  ),
+                  clinicReference: Value(_string(pet['clinicReference'])),
+                  veterinarianReference: Value(
+                    _string(pet['veterinarianReference']),
+                  ),
+                  documentNotes: Value(_string(pet['documentNotes'])),
+                  photoData: Value(_nullableString(pet['photoData'])),
                   createdAt: Value(_date(pet['createdAt'])),
                 ),
               )
@@ -605,6 +1095,109 @@ final class AppDatabase extends _$AppDatabase {
                   clinicName: Value(_nullableString(vaccine['clinicName'])),
                   batchNumber: Value(_nullableString(vaccine['batchNumber'])),
                   createdAt: Value(_date(vaccine['createdAt'])),
+                ),
+              )
+              .toList(),
+        );
+        batch.insertAll(
+          veterinaryContacts,
+          veterinaryContactsData
+              .map(
+                (contact) => VeterinaryContactsCompanion.insert(
+                  id: Value(_int(contact['id'])),
+                  name: _string(contact['name']),
+                  kind: Value(
+                    _string(contact['kind'], fallback: 'Veterinário'),
+                  ),
+                  specialty: Value(_string(contact['specialty'])),
+                  phone: Value(_string(contact['phone'])),
+                  whatsapp: Value(_string(contact['whatsapp'])),
+                  address: Value(_string(contact['address'])),
+                  city: Value(_string(contact['city'])),
+                  state: Value(_string(contact['state'])),
+                  notes: Value(_string(contact['notes'])),
+                  latitude: Value(_nullableDouble(contact['latitude'])),
+                  longitude: Value(_nullableDouble(contact['longitude'])),
+                  createdAt: Value(_date(contact['createdAt'])),
+                  updatedAt: Value(_date(contact['updatedAt'])),
+                ),
+              )
+              .toList(),
+        );
+        batch.insertAll(
+          preventiveRecords,
+          preventivesData
+              .map(
+                (record) => PreventiveRecordsCompanion.insert(
+                  id: Value(_int(record['id'])),
+                  petId: _int(record['petId']),
+                  category: _string(record['category']),
+                  product: _string(record['product']),
+                  appliedAt: _date(record['appliedAt']),
+                  nextDueAt: Value(_nullableDate(record['nextDueAt'])),
+                  provider: Value(_nullableString(record['provider'])),
+                  notes: Value(_nullableString(record['notes'])),
+                  createdAt: Value(_date(record['createdAt'])),
+                ),
+              )
+              .toList(),
+        );
+        batch.insertAll(
+          medicationPlans,
+          medicationsData
+              .map(
+                (medication) => MedicationPlansCompanion.insert(
+                  id: Value(_int(medication['id'])),
+                  petId: _int(medication['petId']),
+                  name: _string(medication['name']),
+                  dosage: _string(medication['dosage']),
+                  schedule: _string(medication['schedule']),
+                  startAt: _date(medication['startAt']),
+                  endAt: Value(_nullableDate(medication['endAt'])),
+                  active: Value(medication['active'] != false),
+                  lastTakenAt: Value(_nullableDate(medication['lastTakenAt'])),
+                  notes: Value(_nullableString(medication['notes'])),
+                  createdAt: Value(_date(medication['createdAt'])),
+                ),
+              )
+              .toList(),
+        );
+        batch.insertAll(
+          familyInvitations,
+          invitationsData
+              .map(
+                (invitation) => FamilyInvitationsCompanion.insert(
+                  id: Value(_int(invitation['id'])),
+                  petId: _int(invitation['petId']),
+                  email: _string(invitation['email']),
+                  role: _string(invitation['role'], fallback: 'Cuidador'),
+                  permissions: Value(
+                    _string(invitation['permissions'], fallback: 'saude'),
+                  ),
+                  status: Value(
+                    _string(invitation['status'], fallback: 'pendente'),
+                  ),
+                  expiresAt: _date(invitation['expiresAt']),
+                  createdAt: Value(_date(invitation['createdAt'])),
+                ),
+              )
+              .toList(),
+        );
+        batch.insertAll(
+          appointments,
+          appointmentsData
+              .map(
+                (appointment) => AppointmentsCompanion.insert(
+                  id: Value(_int(appointment['id'])),
+                  petId: _int(appointment['petId']),
+                  partnerName: _string(appointment['partnerName']),
+                  service: _string(appointment['service']),
+                  scheduledAt: _date(appointment['scheduledAt']),
+                  status: Value(
+                    _string(appointment['status'], fallback: 'agendado'),
+                  ),
+                  notes: Value(_nullableString(appointment['notes'])),
+                  createdAt: Value(_date(appointment['createdAt'])),
                 ),
               )
               .toList(),
@@ -653,6 +1246,11 @@ List<Map<String, dynamic>> _mapList(Object? value) {
   return value.map((item) => Map<String, dynamic>.from(item as Map)).toList();
 }
 
+List<Map<String, dynamic>> _optionalMapList(Object? value) {
+  if (value == null) return <Map<String, dynamic>>[];
+  return _mapList(value);
+}
+
 String _string(Object? value, {String fallback = ''}) =>
     value is String && value.isNotEmpty ? value : fallback;
 
@@ -661,6 +1259,11 @@ String? _nullableString(Object? value) => value is String ? value : null;
 int _int(Object? value) => (value as num).toInt();
 
 double _double(Object? value) => (value as num).toDouble();
+
+double? _nullableDouble(Object? value) =>
+    value is num ? value.toDouble() : null;
+
+bool _bool(Object? value) => value == true;
 
 DateTime _date(Object? value) => DateTime.parse(value as String);
 

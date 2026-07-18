@@ -1,6 +1,7 @@
 import 'package:aumiau_app/main.dart';
 import 'package:aumiau_app/data/app_database.dart';
 import 'package:aumiau_app/domain/product_plan.dart';
+import 'package:aumiau_app/domain/partner_directory.dart';
 import 'package:aumiau_app/services/pdf_service.dart';
 import 'package:aumiau_app/services/pix_service.dart';
 import 'package:aumiau_app/services/sync_service.dart';
@@ -8,6 +9,7 @@ import 'package:aumiau_app/services/sync_gateway.dart';
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:aumiau_app/services/update_service.dart';
 
@@ -52,6 +54,26 @@ void main() {
     await database.close();
   });
 
+  test('persiste validade do plano Family para uso offline', () async {
+    final database = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final validUntil = DateTime(2026, 8, 17);
+    await database.saveProfile(
+      name: 'César Fonseca',
+      email: 'cesar@example.com',
+      plan: ProductCatalog.family.code,
+      familyValidUntil: validUntil,
+      preserveFamilyValidUntil: false,
+    );
+
+    final profile = await database.loadProfile();
+    expect(profile?.plan, ProductCatalog.family.code);
+    expect(profile?.familyValidUntil, validUntil);
+    await database.close();
+  });
+
   test('salva pet, vacina e reagendamento no banco local', () async {
     final database = AppDatabase.fromExecutor(NativeDatabase.memory());
     final pets = await database.loadPets();
@@ -62,6 +84,22 @@ void main() {
       species: 'Gata',
       breed: 'SRD',
       emoji: '🐱',
+      birthDate: DateTime(2022, 4, 10),
+      sex: 'Fêmea',
+      color: 'Tigrada',
+      characteristics: 'Dócil e curiosa',
+      hasPedigree: true,
+      pedigreeNumber: 'PED-123',
+      microchip: '123456789',
+      size: 'Pequeno',
+      reproductiveStatus: 'Castrado(a)',
+      bodyConditionScore: 5.5,
+      clinicReference: 'Clínica Amigo Fiel',
+      veterinarianReference: 'Dra. Marina',
+      documentNotes: 'Carteira física conferida',
+      photoData: 'AQID',
+      weight: 4.2,
+      allergies: 'Frango',
     );
     final vaccineId = await database.addVaccine(
       petId: thor.id,
@@ -75,6 +113,33 @@ void main() {
       measuredAt: DateTime(2026, 7, 15),
       note: 'Consulta',
     );
+    final preventiveId = await database.addPreventive(
+      petId: petId,
+      category: 'Antiparasitário',
+      product: 'Produto de teste',
+      appliedAt: DateTime(2026, 7, 16),
+      nextDueAt: DateTime(2026, 10, 16),
+    );
+    final medicationId = await database.addMedicationPlan(
+      petId: petId,
+      name: 'Suplemento de teste',
+      dosage: '1 comprimido',
+      schedule: 'A cada 12 horas',
+      startAt: DateTime(2026, 7, 16),
+    );
+    final invitationId = await database.addFamilyInvitation(
+      petId: petId,
+      email: 'cuidador@example.com',
+      role: 'Cuidador',
+      permissions: 'saude_rotina',
+      expiresAt: DateTime(2026, 7, 23),
+    );
+    final appointmentId = await database.addAppointment(
+      petId: petId,
+      partnerName: 'Clínica de teste',
+      service: 'Consulta',
+      scheduledAt: DateTime(2026, 7, 20, 10),
+    );
 
     final reminders = await database.loadReminders();
     final reminder = reminders.first;
@@ -83,6 +148,63 @@ void main() {
     await database.completeReminder(reminder.id, nextDate);
 
     expect((await database.loadPets()).any((pet) => pet.id == petId), isTrue);
+    final nina = (await database.loadPets()).firstWhere(
+      (pet) => pet.id == petId,
+    );
+    expect(nina.birthDate, DateTime(2022, 4, 10));
+    expect(nina.sex, 'Fêmea');
+    expect(nina.color, 'Tigrada');
+    expect(nina.characteristics, 'Dócil e curiosa');
+    expect(nina.hasPedigree, isTrue);
+    expect(nina.pedigreeNumber, 'PED-123');
+    expect(nina.microchip, '123456789');
+    expect(nina.size, 'Pequeno');
+    expect(nina.reproductiveStatus, 'Castrado(a)');
+    expect(nina.bodyConditionScore, 5.5);
+    expect(nina.clinicReference, 'Clínica Amigo Fiel');
+    expect(nina.veterinarianReference, 'Dra. Marina');
+    expect(nina.documentNotes, 'Carteira física conferida');
+    expect(nina.photoData, 'AQID');
+    expect(nina.weight, 4.2);
+    expect(nina.allergies, 'Frango');
+    expect(
+      (await database.loadPreventiveRecords()).any(
+        (record) => record.id == preventiveId,
+      ),
+      isTrue,
+    );
+    expect(
+      (await database.loadMedicationPlans()).any(
+        (plan) => plan.id == medicationId,
+      ),
+      isTrue,
+    );
+    await database.markMedicationTaken(medicationId);
+    expect(
+      (await database.loadMedicationPlans())
+          .firstWhere((plan) => plan.id == medicationId)
+          .lastTakenAt,
+      isNot(equals(null)),
+    );
+    expect(
+      (await database.loadFamilyInvitations()).any(
+        (invitation) => invitation.id == invitationId,
+      ),
+      isTrue,
+    );
+    expect(
+      (await database.loadAppointments()).any(
+        (appointment) => appointment.id == appointmentId,
+      ),
+      isTrue,
+    );
+    await database.updateAppointmentStatus(appointmentId, 'check_in');
+    expect(
+      (await database.loadAppointments())
+          .firstWhere((appointment) => appointment.id == appointmentId)
+          .status,
+      'check_in',
+    );
     expect(
       (await database.loadVaccines()).any(
         (vaccine) => vaccine.name == 'Gripe canina',
@@ -117,6 +239,18 @@ void main() {
     expect((await database.loadPets()).any((pet) => pet.id == petId), isFalse);
 
     await database.close();
+  });
+
+  test('busca parceiros por urgência e ordena por proximidade', () {
+    final partners = PartnerDirectory.search(
+      urgencyOnly: true,
+      latitude: -3.1190,
+      longitude: -60.0217,
+    );
+
+    expect(partners, hasLength(1));
+    expect(partners.single.acceptsUrgency, isTrue);
+    expect(partners.single.distanceFrom(-3.1190, -60.0217), lessThan(0.01));
   });
 
   test('gera PDF real do histórico', () async {
@@ -221,7 +355,7 @@ void main() {
     );
     // A marca da autenticação possui animações contínuas; aguarde um quadro
     // estável de renderização em vez de esperar que a tela fique settled.
-    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pump(const Duration(seconds: 1));
 
     expect(find.text('Usar aplicativo offline'), findsOneWidget);
     await tester.ensureVisible(find.text('Usar aplicativo offline'));
@@ -235,8 +369,84 @@ void main() {
     await database.close();
   });
 
+  testWidgets('Hoje usa primeiro e último nome do cadastro', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TodayPage(
+          today: DateTime(2026, 7, 18),
+          profileName: 'César Maria Fonseca',
+          pets: const [],
+          reminders: const [],
+          onComplete: (_) {},
+          onAddReminder: () {},
+          onEditReminder: (_) {},
+          onDeleteReminder: (_) {},
+        ),
+      ),
+    );
+
+    expect(find.text('Oi, César Fonseca! 👋'), findsOneWidget);
+    expect(find.textContaining('@'), findsNothing);
+  });
+
+  testWidgets('Hoje identifica o Family ativo no banner', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: TodayPage(
+          today: DateTime(2026, 7, 18),
+          profileName: 'César Fonseca',
+          isFamily: true,
+          pets: const [],
+          reminders: const [],
+          onComplete: (_) {},
+          onAddReminder: () {},
+          onEditReminder: (_) {},
+          onDeleteReminder: (_) {},
+        ),
+      ),
+    );
+
+    expect(find.text('FAMILY ATIVO'), findsOneWidget);
+    expect(find.text('PLANO GRATUITO'), findsNothing);
+  });
+
+  testWidgets('atalhos do perfil executam suas ações', (tester) async {
+    var notificationsOpened = false;
+    var privacyOpened = false;
+    var helpOpened = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ProfilePage(
+          profile: LocalProfile(name: 'Cezar', email: 'cezar@example.com'),
+          onOpenNotifications: () => notificationsOpened = true,
+          onOpenPrivacy: () => privacyOpened = true,
+          onOpenHelp: () => helpOpened = true,
+        ),
+      ),
+    );
+
+    await tester.drag(find.byType(ListView), const Offset(0, -1200));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Notificações'));
+    await tester.tap(find.text('Privacidade e dados'));
+    await tester.tap(find.text('Ajuda'));
+
+    expect(notificationsOpened, isTrue);
+    expect(privacyOpened, isTrue);
+    expect(helpOpened, isTrue);
+  });
+
   test('identifica nova versão publicada no GitHub', () {
     final service = UpdateService(client: _FakeHttpClient());
+    expect(
+      service.parseRelease({
+        'tag_name': 'v0.3.6',
+        'html_url':
+            'https://github.com/cezar-fournier/aumiau-app/releases/tag/v0.3.6',
+        'assets': const [],
+      }),
+      equals(null),
+    );
     final update = service.parseRelease({
       'tag_name': 'v9.2.0',
       'html_url':
