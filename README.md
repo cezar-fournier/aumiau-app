@@ -61,6 +61,19 @@ O workflow está em `.github/workflows/build-release.yml`. Os pacotes são compi
 com a API de produção `https://aumiau.app.br/` e não dependem de arquivos `.env`
 locais.
 
+## App AuMiau Parceiro
+
+O app para clínicas e profissionais parceiros está no mesmo repositório, em
+`partner_app/`. O pipeline de release gera os quatro artefatos comerciais:
+
+- APK do Cliente;
+- AAB do Cliente;
+- APK do Parceiro;
+- AAB do Parceiro.
+
+Os dois aplicativos usam a mesma keystore de produção, mas mantêm IDs Android
+distintos para permitir a instalação e a atualização independentes.
+
 ## O que já está funcionando
 
 - Dashboard Hoje com cuidados vencidos, de hoje e dos próximos sete dias.
