@@ -385,6 +385,33 @@ void main() {
     await database.close();
   });
 
+  testWidgets('cancelar cadastro profissional fecha o diálogo sem crash', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartnerWorkspacePage(
+          email: 'cliente@exemplo.com',
+          onRegistrationSubmitted: () {},
+          onSwitchToClient: () {},
+          onLogout: () async {},
+          onOpenDeveloper: () {},
+          onOpenHelp: () {},
+          onOpenPrivacy: () {},
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Criar cadastro profissional'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cadastro profissional'), findsOneWidget);
+
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cadastro profissional'), findsNothing);
+    expect(find.text('AuMiau Parceiro(s)'), findsOneWidget);
+  });
+
   testWidgets('Hoje usa primeiro e último nome do cadastro', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

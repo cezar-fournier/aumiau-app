@@ -1209,7 +1209,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
             content: Text(message),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(dialogContext, false),
+                onPressed: () {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  Navigator.of(dialogContext).pop(false);
+                },
                 child: const Text('Cancelar'),
               ),
               FilledButton(
@@ -4545,7 +4548,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
+            onPressed: () {
+              FocusManager.instance.primaryFocus?.unfocus();
+              Navigator.of(dialogContext).pop(false);
+            },
             child: const Text('Cancelar'),
           ),
           FilledButton(
@@ -5000,7 +5006,10 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
+              onPressed: () {
+                FocusManager.instance.primaryFocus?.unfocus();
+                Navigator.of(dialogContext).pop(false);
+              },
               child: const Text('Cancelar'),
             ),
             FilledButton(
@@ -5015,7 +5024,8 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
                     crmv.text.trim().isEmpty) {
                   return;
                 }
-                Navigator.pop(dialogContext, true);
+                FocusManager.instance.primaryFocus?.unfocus();
+                Navigator.of(dialogContext).pop(true);
               },
               child: const Text('Enviar para análise'),
             ),
@@ -5023,6 +5033,9 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
         ),
       ),
     );
+    // Aguarda a desmontagem da rota e do teclado antes de liberar os
+    // controladores, evitando dependentes do diálogo durante o pop.
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     name.dispose();
     document.dispose();
     responsible.dispose();
