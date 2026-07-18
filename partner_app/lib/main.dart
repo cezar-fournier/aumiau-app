@@ -180,179 +180,193 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
-              child: Card(
-                elevation: 0,
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Semantics(
-                        label: 'AuMiau, gatinha e cachorrinho animados',
-                        image: true,
-                        child: Image.asset(
-                          'assets/branding/aumiau_canva_animation.gif',
-                          width: 330,
-                          height: 165,
-                          fit: BoxFit.contain,
-                          filterQuality: FilterQuality.medium,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'AuMiau Parceiro',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
-                          color: forest,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        registering
-                            ? 'Cadastre sua clínica ou consultório'
-                            : 'Acesse sua área profissional',
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 24),
-                      if (registering) ...[
-                        TextField(
-                          controller: businessName,
-                          textCapitalization: TextCapitalization.words,
-                          decoration: const InputDecoration(
-                            labelText: 'Nome da clínica ou profissional *',
+    return PopScope<bool>(
+      canPop: !registering,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && registering && !busy) {
+          setState(() {
+            registering = false;
+            message = null;
+          });
+        }
+      },
+      child: Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: Card(
+                  elevation: 0,
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Semantics(
+                          label: 'AuMiau, gatinha e cachorrinho animados',
+                          image: true,
+                          child: Image.asset(
+                            'assets/branding/aumiau_canva_animation.gif',
+                            width: 330,
+                            height: 165,
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.medium,
                           ),
                         ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: responsibleName,
-                          textCapitalization: TextCapitalization.words,
-                          decoration: const InputDecoration(
-                            labelText: 'Nome do responsável *',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: cnpj,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'CNPJ *',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: phone,
-                          keyboardType: TextInputType.phone,
-                          decoration: const InputDecoration(
-                            labelText: 'Telefone ou WhatsApp *',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: address,
-                          textCapitalization: TextCapitalization.words,
-                          decoration: const InputDecoration(
-                            labelText: 'Endereço completo *',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: TextField(
-                                controller: postalCode,
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  labelText: 'CEP *',
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: TextField(
-                                controller: city,
-                                textCapitalization: TextCapitalization.words,
-                                decoration: const InputDecoration(
-                                  labelText: 'Cidade *',
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: state,
-                          textCapitalization: TextCapitalization.characters,
-                          decoration: const InputDecoration(
-                            labelText: 'Estado/UF *',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-                      TextField(
-                        controller: email,
-                        keyboardType: TextInputType.emailAddress,
-                        decoration: const InputDecoration(
-                          labelText: 'E-mail *',
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: password,
-                        obscureText: true,
-                        decoration: const InputDecoration(labelText: 'Senha *'),
-                      ),
-                      if (message != null) ...[
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 4),
                         Text(
-                          message!,
-                          style: const TextStyle(color: Colors.redAccent),
+                          'AuMiau Parceiro',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.titleLarge
+                              ?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: forest,
+                              ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          registering
+                              ? 'Cadastre sua clínica ou consultório'
+                              : 'Acesse sua área profissional',
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 24),
+                        if (registering) ...[
+                          TextField(
+                            controller: businessName,
+                            textCapitalization: TextCapitalization.words,
+                            decoration: const InputDecoration(
+                              labelText: 'Nome da clínica ou profissional *',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: responsibleName,
+                            textCapitalization: TextCapitalization.words,
+                            decoration: const InputDecoration(
+                              labelText: 'Nome do responsável *',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: cnpj,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              labelText: 'CNPJ *',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: phone,
+                            keyboardType: TextInputType.phone,
+                            decoration: const InputDecoration(
+                              labelText: 'Telefone ou WhatsApp *',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: address,
+                            textCapitalization: TextCapitalization.words,
+                            decoration: const InputDecoration(
+                              labelText: 'Endereço completo *',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: postalCode,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'CEP *',
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: TextField(
+                                  controller: city,
+                                  textCapitalization: TextCapitalization.words,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Cidade *',
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: state,
+                            textCapitalization: TextCapitalization.characters,
+                            decoration: const InputDecoration(
+                              labelText: 'Estado/UF *',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        TextField(
+                          controller: email,
+                          keyboardType: TextInputType.emailAddress,
+                          decoration: const InputDecoration(
+                            labelText: 'E-mail *',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: password,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            labelText: 'Senha *',
+                          ),
+                        ),
+                        if (message != null) ...[
+                          const SizedBox(height: 14),
+                          Text(
+                            message!,
+                            style: const TextStyle(color: Colors.redAccent),
+                          ),
+                        ],
+                        const SizedBox(height: 22),
+                        FilledButton(
+                          onPressed: busy ? null : submit,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: forest,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          child: busy
+                              ? const SizedBox(
+                                  height: 22,
+                                  width: 22,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : Text(
+                                  registering
+                                      ? 'Criar cadastro profissional'
+                                      : 'Entrar',
+                                ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton(
+                          onPressed: busy
+                              ? null
+                              : () => setState(() {
+                                  registering = !registering;
+                                  message = null;
+                                }),
+                          child: Text(
+                            registering
+                                ? 'Já tenho cadastro'
+                                : 'Criar cadastro de parceiro',
+                          ),
                         ),
                       ],
-                      const SizedBox(height: 22),
-                      FilledButton(
-                        onPressed: busy ? null : submit,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: forest,
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                        ),
-                        child: busy
-                            ? const SizedBox(
-                                height: 22,
-                                width: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : Text(
-                                registering
-                                    ? 'Criar cadastro profissional'
-                                    : 'Entrar',
-                              ),
-                      ),
-                      const SizedBox(height: 8),
-                      TextButton(
-                        onPressed: busy
-                            ? null
-                            : () => setState(() {
-                                registering = !registering;
-                                message = null;
-                              }),
-                        child: Text(
-                          registering
-                              ? 'Já tenho cadastro'
-                              : 'Criar cadastro de parceiro',
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),
