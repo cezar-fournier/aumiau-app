@@ -2,6 +2,7 @@ import 'package:aumiau_app/main.dart';
 import 'package:aumiau_app/data/app_database.dart';
 import 'package:aumiau_app/domain/product_plan.dart';
 import 'package:aumiau_app/domain/partner_directory.dart';
+import 'package:aumiau_app/domain/brazil_documents.dart';
 import 'package:aumiau_app/services/pdf_service.dart';
 import 'package:aumiau_app/services/pix_service.dart';
 import 'package:aumiau_app/services/sync_service.dart';
@@ -15,6 +16,18 @@ import 'package:aumiau_app/services/update_service.dart';
 
 void main() {
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+
+  test('formata e valida CPF e CNPJ do cadastro Parceiro', () {
+    expect(BrazilDocuments.formatCpfCnpj('41633032272'), '416.330.322-72');
+    expect(
+      BrazilDocuments.formatCpfCnpj('04368187000131'),
+      '04.368.187/0001-31',
+    );
+    expect(BrazilDocuments.isValidCpf('416.330.322-72'), isTrue);
+    expect(BrazilDocuments.isValidCnpj('04.368.187/0001-31'), isTrue);
+    expect(BrazilDocuments.errorFor('111.111.111-11'), isNot(equals(null)));
+    expect(BrazilDocuments.errorFor(''), isNot(equals(null)));
+  });
 
   test('catálogo comercial aplica limites do Free Offline', () {
     final plan = ProductCatalog.freeOffline;
@@ -360,6 +373,9 @@ void main() {
     expect(find.text('Usar aplicativo offline'), findsOneWidget);
     await tester.ensureVisible(find.text('Usar aplicativo offline'));
     await tester.tap(find.text('Usar aplicativo offline'));
+    await tester.pumpAndSettle();
+    expect(find.text('Cliente AuMiau'), findsOneWidget);
+    await tester.tap(find.text('Cliente AuMiau'));
     await tester.pumpAndSettle();
 
     expect(find.text('Oi, Cezar Fournier! 👋'), findsOneWidget);

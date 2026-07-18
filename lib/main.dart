@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'config/app_config.dart';
 import 'data/app_database.dart';
 import 'domain/partner_directory.dart';
+import 'domain/brazil_documents.dart';
 import 'domain/product_plan.dart';
 import 'services/backup_service.dart';
 import 'services/notification_service.dart';
@@ -34,6 +35,8 @@ const _authPinkDark = _forestDark;
 const _authBlush = _paper;
 
 enum _AuthScreen { welcome, login, register, verifyEmail }
+
+enum _AppMode { client, partner }
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -720,6 +723,9 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   String? _loadError;
   bool _updateNoticeShown = false;
   bool _showAuthGate = true;
+  bool _showProfileChooser = false;
+  _AppMode _activeMode = _AppMode.client;
+  bool _partnerRegistrationPending = false;
   _AuthScreen _authScreen = _AuthScreen.welcome;
   bool _authBusy = false;
   String? _pendingVerificationEmail;
@@ -4002,6 +4008,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     setState(() {
       _accessToken = session.accessToken;
       _showAuthGate = false;
+      _showProfileChooser = true;
     });
     await _refreshAccountEntitlement();
     await _loadData();
@@ -4074,9 +4081,21 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     });
   }
 
+  void _selectAppMode(_AppMode mode) {
+    if (!mounted) return;
+    setState(() {
+      _activeMode = mode;
+      _showProfileChooser = false;
+      _selectedIndex = 0;
+    });
+  }
+
   Future<void> _continueOffline() async {
     if (!mounted) return;
-    setState(() => _showAuthGate = false);
+    setState(() {
+      _showAuthGate = false;
+      _showProfileChooser = true;
+    });
   }
 
   Future<void> _completeAuthenticatedSession({
@@ -4098,11 +4117,16 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 ? existingProfile!.name
                 : email),
       email: email,
-      plan: ProductCatalog.family.code,
+      // Uma conta nova começa no FreePet. O Family só é ativado após
+      // confirmação real da assinatura pelo backend/Mercado Pago.
+      plan: ProductCatalog.freeOffline.code,
+      familyValidUntil: null,
+      preserveFamilyValidUntil: false,
     );
     if (!mounted) return;
     setState(() {
       _showAuthGate = false;
+      _showProfileChooser = true;
       _authBusy = false;
       _selectedIndex = 0;
     });
@@ -4501,6 +4525,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     setState(() {
       _authScreen = _AuthScreen.welcome;
       _showAuthGate = true;
+      _showProfileChooser = false;
+      _activeMode = _AppMode.client;
       _selectedIndex = 0;
     });
     ScaffoldMessenger.of(context).showSnackBar(
@@ -4604,6 +4630,28 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       );
     }
 
+    if (_showProfileChooser) {
+      return _ProfileModeChooserPage(
+        email: _profile.email,
+        onSelect: _selectAppMode,
+        onLogout: _logout,
+      );
+    }
+
+    if (_activeMode == _AppMode.partner) {
+      return PartnerWorkspacePage(
+        email: _profile.email,
+        initialRegistrationPending: _partnerRegistrationPending,
+        onRegistrationSubmitted: () =>
+            setState(() => _partnerRegistrationPending = true),
+        onSwitchToClient: () => _selectAppMode(_AppMode.client),
+        onLogout: _logout,
+        onOpenDeveloper: _openDeveloperInfo,
+        onOpenHelp: _showHelp,
+        onOpenPrivacy: _showPrivacyAndData,
+      );
+    }
+
     final pages = [
       TodayPage(
         today: _today,
@@ -4658,6 +4706,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         onRestoreBackup: _restoreBackup,
         onSync: _syncNow,
         onLogout: _logout,
+        onSwitchToPartner: () => _selectAppMode(_AppMode.partner),
         syncing: _syncing,
       ),
     ];
@@ -4716,6 +4765,492 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       ),
     );
   }
+}
+
+class _ProfileModeChooserPage extends StatelessWidget {
+  const _ProfileModeChooserPage({
+    required this.email,
+    required this.onSelect,
+    required this.onLogout,
+  });
+
+  final String email;
+  final ValueChanged<_AppMode> onSelect;
+  final Future<void> Function() onLogout;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: _paper,
+    body: SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(22, 28, 22, 28),
+        children: [
+          const _AuthBrand(showTagline: true),
+          const SizedBox(height: 26),
+          Text(
+            'Como você deseja usar o AuMiau?',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+              color: _ink,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            email.isEmpty
+                ? 'Escolha um perfil para continuar.'
+                : 'Conta conectada: $email',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: _muted),
+          ),
+          const SizedBox(height: 24),
+          _ModeCard(
+            icon: Icons.pets_outlined,
+            title: 'Cliente AuMiau',
+            description: 'Pets, saúde, rotina, atendimento e Family.',
+            color: _forest,
+            onTap: () => onSelect(_AppMode.client),
+          ),
+          const SizedBox(height: 14),
+          _ModeCard(
+            icon: Icons.business_outlined,
+            title: 'Parceiro AuMiau',
+            description: 'Clínica ou profissional com cadastro e verificação.',
+            color: const Color(0xFF7C63B5),
+            onTap: () => onSelect(_AppMode.partner),
+          ),
+          const SizedBox(height: 18),
+          TextButton.icon(
+            onPressed: onLogout,
+            icon: const Icon(Icons.logout_outlined),
+            label: const Text('Sair da conta'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _ModeCard extends StatelessWidget {
+  const _ModeCard({
+    required this.icon,
+    required this.title,
+    required this.description,
+    required this.color,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String description;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 25,
+              backgroundColor: color.withValues(alpha: .12),
+              foregroundColor: color,
+              child: Icon(icon),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      color: _ink,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(description, style: const TextStyle(color: _muted)),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, color: color),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class PartnerWorkspacePage extends StatefulWidget {
+  const PartnerWorkspacePage({
+    super.key,
+    required this.email,
+    this.initialRegistrationPending = false,
+    required this.onRegistrationSubmitted,
+    required this.onSwitchToClient,
+    required this.onLogout,
+    required this.onOpenDeveloper,
+    required this.onOpenHelp,
+    required this.onOpenPrivacy,
+  });
+
+  final String email;
+  final bool initialRegistrationPending;
+  final VoidCallback onRegistrationSubmitted;
+  final VoidCallback onSwitchToClient;
+  final Future<void> Function() onLogout;
+  final VoidCallback onOpenDeveloper;
+  final VoidCallback onOpenHelp;
+  final VoidCallback onOpenPrivacy;
+
+  @override
+  State<PartnerWorkspacePage> createState() => _PartnerWorkspacePageState();
+}
+
+class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
+  int _selectedIndex = 0;
+  late bool _registrationPending = widget.initialRegistrationPending;
+
+  Future<void> _openPartnerRegistration() async {
+    final name = TextEditingController();
+    final document = TextEditingController();
+    final responsible = TextEditingController();
+    final crmv = TextEditingController();
+    final phone = TextEditingController();
+    final address = TextEditingController();
+    String? documentError;
+    final submitted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Cadastro profissional'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Informe os dados para análise. O perfil só será publicado após verificação.',
+                  style: TextStyle(color: _muted),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: name,
+                  decoration: const InputDecoration(labelText: 'Nome público'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: document,
+                  keyboardType: TextInputType.number,
+                  onChanged: (value) {
+                    final formatted = BrazilDocuments.formatCpfCnpj(value);
+                    if (formatted == value) return;
+                    document.value = TextEditingValue(
+                      text: formatted,
+                      selection: TextSelection.collapsed(
+                        offset: formatted.length,
+                      ),
+                    );
+                    if (documentError != null) {
+                      setDialogState(() => documentError = null);
+                    }
+                  },
+                  decoration: InputDecoration(
+                    labelText: 'CPF ou CNPJ',
+                    hintText: '000.000.000-00 ou 00.000.000/0000-00',
+                    errorText: documentError,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: responsible,
+                  decoration: const InputDecoration(
+                    labelText: 'Responsável profissional',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: crmv,
+                  decoration: const InputDecoration(
+                    labelText: 'CRMV/UF e número',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: phone,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: 'Telefone/WhatsApp',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: address,
+                  decoration: const InputDecoration(
+                    labelText: 'Endereço completo',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final validationError = BrazilDocuments.errorFor(document.text);
+                if (validationError != null) {
+                  setDialogState(() => documentError = validationError);
+                  return;
+                }
+                if (name.text.trim().isEmpty ||
+                    responsible.text.trim().isEmpty ||
+                    crmv.text.trim().isEmpty) {
+                  return;
+                }
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Enviar para análise'),
+            ),
+          ],
+        ),
+      ),
+    );
+    name.dispose();
+    document.dispose();
+    responsible.dispose();
+    crmv.dispose();
+    phone.dispose();
+    address.dispose();
+    if (submitted != true || !mounted) return;
+    setState(() => _registrationPending = true);
+    widget.onRegistrationSubmitted();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Cadastro enviado. O perfil permanecerá oculto até a verificação.',
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = [_buildHome(), _buildAgenda(), _buildProfile()];
+    return Scaffold(
+      backgroundColor: _paper,
+      appBar: AppBar(
+        title: const Text('AuMiau Parceiro(s)'),
+        actions: [
+          IconButton(
+            tooltip: 'Trocar para Cliente',
+            onPressed: widget.onSwitchToClient,
+            icon: const Icon(Icons.swap_horiz),
+          ),
+          IconButton(
+            tooltip: 'Sair da conta',
+            onPressed: widget.onLogout,
+            icon: const Icon(Icons.logout_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: pages[_selectedIndex],
+          ),
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: (index) =>
+            setState(() => _selectedIndex = index),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard),
+            label: 'Início',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.calendar_month_outlined),
+            selectedIcon: Icon(Icons.calendar_month),
+            label: 'Agenda',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.business_outlined),
+            selectedIcon: Icon(Icons.business),
+            label: 'Perfil',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHome() => ListView(
+    padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+    children: [
+      Text(
+        'Olá, parceiro',
+        style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+          color: _ink,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: 4),
+      Text(widget.email, style: const TextStyle(color: _muted)),
+      const SizedBox(height: 18),
+      Card(
+        color: _registrationPending ? const Color(0xFFFFF6DF) : _forest,
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _registrationPending
+                    ? 'CADASTRO EM ANÁLISE'
+                    : 'CONTA DE PARCEIRO NECESSÁRIA',
+                style: TextStyle(
+                  color: _registrationPending ? _forestDark : _mango,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: .5,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                _registrationPending
+                    ? 'Seu perfil ficará oculto para clientes até a conferência dos documentos.'
+                    : 'Complete o cadastro profissional para publicar serviços e atender clientes.',
+                style: TextStyle(
+                  color: _registrationPending ? _ink : Colors.white,
+                  height: 1.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 16),
+      if (!_registrationPending)
+        FilledButton.icon(
+          onPressed: _openPartnerRegistration,
+          icon: const Icon(Icons.assignment_ind_outlined),
+          label: const Text('Criar cadastro profissional'),
+        ),
+      const SizedBox(height: 14),
+      _partnerInfoCard(
+        Icons.event_available_outlined,
+        'Agenda',
+        'Solicitações, horários e check-in em um só lugar.',
+        () => setState(() => _selectedIndex = 1),
+      ),
+      const SizedBox(height: 12),
+      _partnerInfoCard(
+        Icons.verified_user_outlined,
+        'Verificação profissional',
+        'CPF/CNPJ, responsável, CRMV e documentos para auditoria.',
+        _openPartnerRegistration,
+      ),
+    ],
+  );
+
+  Widget _buildAgenda() => ListView(
+    padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+    children: [
+      Text(
+        'Agenda e solicitações',
+        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+          color: _ink,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: 16),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Nenhuma solicitação carregada',
+                style: TextStyle(fontWeight: FontWeight.w800, color: _ink),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _registrationPending
+                    ? 'A agenda será publicada quando o cadastro for aprovado.'
+                    : 'Conclua o cadastro para receber solicitações de atendimento.',
+                style: const TextStyle(color: _muted),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+
+  Widget _buildProfile() => ListView(
+    padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+    children: [
+      Text(
+        'Perfil profissional',
+        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+          color: _ink,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: 16),
+      _partnerInfoCard(
+        Icons.privacy_tip_outlined,
+        'Privacidade e dados',
+        'Consentimentos, documentos e segurança.',
+        widget.onOpenPrivacy,
+      ),
+      const SizedBox(height: 10),
+      _partnerInfoCard(
+        Icons.help_outline,
+        'Ajuda e suporte',
+        'Fale com a equipe AuMiau.',
+        widget.onOpenHelp,
+      ),
+      const SizedBox(height: 10),
+      _partnerInfoCard(
+        Icons.business_center_outlined,
+        'Desenvolvedor',
+        'C.A. Informática • AuMiau',
+        widget.onOpenDeveloper,
+      ),
+      const SizedBox(height: 18),
+      OutlinedButton.icon(
+        onPressed: widget.onSwitchToClient,
+        icon: const Icon(Icons.swap_horiz),
+        label: const Text('Trocar para Cliente AuMiau'),
+      ),
+    ],
+  );
+
+  Widget _partnerInfoCard(
+    IconData icon,
+    String title,
+    String subtitle,
+    VoidCallback onTap,
+  ) => Card(
+    child: ListTile(
+      onTap: onTap,
+      leading: Icon(icon, color: _forest),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.chevron_right),
+    ),
+  );
 }
 
 class _AuthFlowPage extends StatelessWidget {
@@ -7030,6 +7565,7 @@ class ProfilePage extends StatelessWidget {
     this.onRestoreBackup,
     this.onSync,
     this.onLogout,
+    this.onSwitchToPartner,
     this.syncing = false,
   });
 
@@ -7051,6 +7587,7 @@ class ProfilePage extends StatelessWidget {
   final VoidCallback? onRestoreBackup;
   final VoidCallback? onSync;
   final VoidCallback? onLogout;
+  final VoidCallback? onSwitchToPartner;
   final bool syncing;
 
   @override
@@ -7271,6 +7808,17 @@ class ProfilePage extends StatelessWidget {
                   ),
                 ],
               ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (onSwitchToPartner != null) ...[
+          Card(
+            child: _SettingsTile(
+              icon: Icons.business_center_outlined,
+              title: 'Usar como Parceiro',
+              subtitle: 'Acesse o cadastro profissional e a agenda.',
+              onTap: onSwitchToPartner,
             ),
           ),
           const SizedBox(height: 16),
