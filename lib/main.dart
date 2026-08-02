@@ -6209,9 +6209,11 @@ class _AuthWelcomeView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _AuthCard(
+      topRightOverlay: const _AuthBetaBadge(),
+      bottomOverlay: const _AuthTrustFooter(),
       children: [
         const SizedBox(height: 18),
-        const _AuthBrand(showTagline: true, showBeta: true),
+        const _AuthBrand(showTagline: true),
         const SizedBox(height: 30),
         const Text(
           'Cuide de quem ama',
@@ -6246,12 +6248,42 @@ class _AuthWelcomeView extends StatelessWidget {
           textAlign: TextAlign.center,
           style: TextStyle(color: _muted, fontSize: 12),
         ),
-        const SizedBox(height: 22),
-        const _AuthTrustFooter(),
-        const SizedBox(height: 4),
       ],
     );
   }
+}
+
+class _AuthBetaBadge extends StatelessWidget {
+  const _AuthBetaBadge();
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    label: 'Versão beta para testes',
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF2E3),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: const Color(0x99E57700)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x14000000),
+            blurRadius: 8,
+            offset: Offset(0, 2),
+          ),
+        ],
+      ),
+      child: const Text(
+        'BETA',
+        style: TextStyle(
+          color: Color(0xFF914700),
+          fontSize: 10,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 1.1,
+        ),
+      ),
+    ),
+  );
 }
 
 class _AuthTrustFooter extends StatelessWidget {
@@ -6789,9 +6821,15 @@ class _AuthVerifyEmailViewState extends State<_AuthVerifyEmailView> {
 }
 
 class _AuthCard extends StatelessWidget {
-  const _AuthCard({required this.children});
+  const _AuthCard({
+    required this.children,
+    this.topRightOverlay,
+    this.bottomOverlay,
+  });
 
   final List<Widget> children;
+  final Widget? topRightOverlay;
+  final Widget? bottomOverlay;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -6808,15 +6846,28 @@ class _AuthCard extends StatelessWidget {
         ),
       ],
     ),
-    child: Column(children: children),
+    child: Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Column(
+          children: [
+            ...children,
+            if (bottomOverlay != null) const SizedBox(height: 92),
+          ],
+        ),
+        if (topRightOverlay != null)
+          Positioned(top: -3, right: -8, child: topRightOverlay!),
+        if (bottomOverlay != null)
+          Positioned(left: -8, right: -8, bottom: -13, child: bottomOverlay!),
+      ],
+    ),
   );
 }
 
 class _AuthBrand extends StatelessWidget {
-  const _AuthBrand({this.showTagline = false, this.showBeta = false});
+  const _AuthBrand({this.showTagline = false});
 
   final bool showTagline;
-  final bool showBeta;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -6834,45 +6885,14 @@ class _AuthBrand extends StatelessWidget {
       ),
       const SizedBox(height: 4),
       if (showTagline)
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text(
-              'CUIDADO COM CARINHO',
-              style: TextStyle(
-                color: _muted,
-                fontSize: 10,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1.5,
-              ),
-            ),
-            if (showBeta) ...[
-              const SizedBox(width: 10),
-              Semantics(
-                label: 'Versão beta para testes',
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0x1FFF8A00),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: const Color(0x66FF8A00)),
-                  ),
-                  child: const Text(
-                    'BETA',
-                    style: TextStyle(
-                      color: Color(0xFF9A4D00),
-                      fontSize: 9,
-                      fontWeight: FontWeight.w900,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ],
+        const Text(
+          'CUIDADO COM CARINHO',
+          style: TextStyle(
+            color: _muted,
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.5,
+          ),
         ),
     ],
   );
