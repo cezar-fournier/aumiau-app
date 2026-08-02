@@ -1,0 +1,15 @@
+[Unit]
+Description=Notifica falha do backup AuMiau ao Better Stack
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/aumiau/backup-heartbeat.env
+ExecStart=/usr/local/sbin/aumiau-heartbeat-notify fail backup
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

@@ -1,0 +1,30 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+AUMIAU_HEARTBEAT_STATUS="${1:?Informe success ou fail.}"
+AUMIAU_HEARTBEAT_SERVICE="${2:?Informe o nome do serviço.}"
+AUMIAU_HEARTBEAT_BASE="${AUMIAU_HEARTBEAT_URL:?AUMIAU_HEARTBEAT_URL ausente.}"
+
+case "$AUMIAU_HEARTBEAT_STATUS" in
+  success)
+    AUMIAU_HEARTBEAT_TARGET="${AUMIAU_HEARTBEAT_BASE%/}"
+    ;;
+  fail)
+    AUMIAU_HEARTBEAT_TARGET="${AUMIAU_HEARTBEAT_BASE%/}/fail"
+    ;;
+  *)
+    echo "Status de heartbeat inválido." >&2
+    exit 2
+    ;;
+esac
+
+curl \
+  --fail \
+  --silent \
+  --show-error \
+  --max-time 15 \
+  --request POST \
+  --header 'Content-Type: text/plain; charset=utf-8' \
+  --data-binary "AuMiau ${AUMIAU_HEARTBEAT_SERVICE}: ${AUMIAU_HEARTBEAT_STATUS} em $(date -u +%FT%TZ)" \
+  "$AUMIAU_HEARTBEAT_TARGET" \
+  >/dev/null
