@@ -1,0 +1,12 @@
+[Unit]
+Description=Executa o monitor operacional do AuMiau a cada cinco minutos
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+RandomizedDelaySec=30s
+Persistent=true
+Unit=aumiau-monitor.service
+
+[Install]
+WantedBy=timers.target

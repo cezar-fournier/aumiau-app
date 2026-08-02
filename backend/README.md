@@ -57,10 +57,15 @@ anteriores são revogadas.
 
 - `/health`: verificação básica da API e do PostgreSQL.
 - `/ready`: readiness para publicação e monitoramento.
-- `/metrics`: métricas agregadas em formato Prometheus, sem tokens ou dados
-  pessoais sensíveis.
-- Os logs registram método, caminho, status e duração, sem cabeçalhos ou corpo
-  de requisições.
+- Toda resposta inclui `X-Request-ID`; um identificador seguro enviado pelo
+  cliente é preservado para correlação ponta a ponta.
+- O logger `aumiau.api` produz eventos JSON com método, rota, status, duração e
+  IP, sem registrar corpo, senha, token ou documento.
+- `/metrics` expõe métricas Prometheus e indicadores do banco somente com
+  `Authorization: Bearer <METRICS_TOKEN>`. Sem configuração, responde 404.
+- `scripts/monitor_operations.py` verifica os endpoints, disco, idade do backup
+  e containers. Os modelos em `ops/` executam o monitor a cada cinco minutos e
+  permitem entregar alertas por webhook privado.
 
 O arquivo `.env` contém credenciais e não deve ser versionado.
 

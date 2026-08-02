@@ -5,7 +5,6 @@ import os
 import hashlib
 import hmac
 import json
-import logging
 import math
 import secrets
 import smtplib
@@ -47,6 +46,7 @@ from app.mfa import (
     verify_totp,
 )
 from app.migrations import apply_migrations
+from app.observability import RequestMetrics, configure_json_logger, monotonic_seconds, resolve_request_id
 from app.security import InMemoryRateLimiter, rate_limit_for
 
 
@@ -77,7 +77,8 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME).strip()
 AUMIAU_WEB_URL = os.getenv("AUMIAU_WEB_URL", "https://aumiau.app.br").rstrip("/")
 PARTNER_DOCUMENTS_DIR = os.getenv("PARTNER_DOCUMENTS_DIR", "/data/partner-documents")
-logger = logging.getLogger("aumiau.api")
+METRICS_TOKEN = os.getenv("METRICS_TOKEN", "").strip()
+logger = configure_json_logger("aumiau.api")
 STARTED_AT = time.monotonic()
 
 
@@ -331,6 +332,7 @@ class EntityBatch(BaseModel):
 
 app = FastAPI(title="AuMiau API", version="1.0.0")
 rate_limiter = InMemoryRateLimiter()
+request_metrics = RequestMetrics()
 
 BILLING_PRODUCTS: dict[str, dict[str, Any]] = {
     "family_monthly": {
@@ -453,7 +455,10 @@ def normalize_cnpj(value: str, *, required: bool = True) -> str:
 
 @app.middleware("http")
 async def request_logging(request, call_next):
-    started = time.perf_counter()
+    started = monotonic_seconds()
+    request_id = resolve_request_id(request.headers.get("x-request-id"))
+    request.state.request_id = request_id
+    request_metrics.begin()
     policy = rate_limit_for(request.url.path)
     if policy is not None:
         limit, window_seconds = policy
@@ -464,20 +469,63 @@ async def request_logging(request, call_next):
             window_seconds=window_seconds,
         )
         if not decision.allowed:
-            return JSONResponse(
+            elapsed = monotonic_seconds() - started
+            request_metrics.finish(request.method, request.url.path, 429, elapsed)
+            response = JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={"detail": "Muitas tentativas. Aguarde e tente novamente."},
-                headers={"Retry-After": str(decision.retry_after_seconds)},
+                headers={
+                    "Retry-After": str(decision.retry_after_seconds),
+                    "X-Request-ID": request_id,
+                },
             )
-    response = await call_next(request)
-    elapsed_ms = (time.perf_counter() - started) * 1000
+            logger.warning(
+                "request_rate_limited",
+                extra={
+                    "event": "request_rate_limited",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": 429,
+                    "duration_ms": round(elapsed * 1000, 3),
+                    "client_ip": client_host,
+                },
+            )
+            return response
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed = monotonic_seconds() - started
+        request_metrics.finish(request.method, request.url.path, 500, elapsed)
+        logger.exception(
+            "request_failed",
+            extra={
+                "event": "request_failed",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": 500,
+                "duration_ms": round(elapsed * 1000, 3),
+                "client_ip": request.client.host if request.client else "unknown",
+            },
+        )
+        raise
+    elapsed = monotonic_seconds() - started
+    elapsed_ms = elapsed * 1000
+    request_metrics.finish(request.method, request.url.path, response.status_code, elapsed)
     logger.info(
-        "request method=%s path=%s status=%s duration_ms=%.1f",
-        request.method,
-        request.url.path,
-        response.status_code,
-        elapsed_ms,
+        "request_completed",
+        extra={
+            "event": "request_completed",
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": round(elapsed_ms, 3),
+            "client_ip": request.client.host if request.client else "unknown",
+        },
     )
+    response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -1345,7 +1393,14 @@ def ready() -> dict[str, str]:
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
-def metrics() -> str:
+def metrics(authorization: str | None = Header(default=None)) -> str:
+    if not METRICS_TOKEN:
+        raise HTTPException(status_code=404, detail="Recurso não encontrado.")
+    supplied_token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        supplied_token = authorization[7:].strip()
+    if not hmac.compare_digest(supplied_token, METRICS_TOKEN):
+        raise HTTPException(status_code=401, detail="Credencial de métricas inválida.")
     try:
         with database_connection() as connection:
             with connection.cursor() as cursor:
@@ -1362,7 +1417,7 @@ def metrics() -> str:
     except psycopg.Error as error:
         raise HTTPException(status_code=503, detail="Banco indisponível.") from error
     uptime = max(0.0, time.monotonic() - STARTED_AT)
-    return "\n".join(
+    business_metrics = "\n".join(
         [
             "# HELP aumiau_api_info Informacoes da API AuMiau.",
             "# TYPE aumiau_api_info gauge",
@@ -1382,6 +1437,7 @@ def metrics() -> str:
             "",
         ]
     )
+    return request_metrics.render_prometheus() + business_metrics
 
 
 @app.get("/admin", response_class=HTMLResponse)
