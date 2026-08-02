@@ -69,6 +69,23 @@ def send_webhook(url: str, payload: dict[str, object]) -> None:
             raise RuntimeError(f"Webhook retornou HTTP {response.status}")
 
 
+def heartbeat_target(url: str, *, healthy: bool) -> str:
+    base = url.rstrip("/")
+    return base if healthy else f"{base}/fail"
+
+
+def send_heartbeat(url: str, payload: dict[str, object], *, healthy: bool) -> None:
+    request = Request(
+        heartbeat_target(url, healthy=healthy),
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        if response.status >= 300:
+            raise RuntimeError(f"Heartbeat retornou HTTP {response.status}")
+
+
 def main() -> int:
     base_url = os.getenv("AUMIAU_MONITOR_BASE_URL", "https://aumiau.app.br").rstrip("/")
     backup_root = Path(os.getenv("AUMIAU_BACKUP_ROOT", "/var/backups/aumiau"))
@@ -119,7 +136,16 @@ def main() -> int:
             send_webhook(webhook, payload)
         except Exception as error:
             print(json.dumps({"event": "alert_delivery_failed", "error": str(error)}), file=sys.stderr)
-    return 1 if failures else 0
+
+    heartbeat = os.getenv("AUMIAU_HEARTBEAT_URL", "").strip()
+    heartbeat_failed = False
+    if heartbeat:
+        try:
+            send_heartbeat(heartbeat, payload, healthy=not failures)
+        except Exception as error:
+            heartbeat_failed = True
+            print(json.dumps({"event": "heartbeat_delivery_failed", "error": str(error)}), file=sys.stderr)
+    return 1 if failures or heartbeat_failed else 0
 
 
 if __name__ == "__main__":
