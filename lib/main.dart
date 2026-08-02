@@ -15,6 +15,9 @@ import 'domain/partner_directory.dart';
 import 'domain/brazil_documents.dart';
 import 'domain/partner_profile.dart';
 import 'domain/product_plan.dart';
+import 'localization/app_locale_controller.dart';
+import 'localization/app_locale_scope.dart';
+import 'localization/app_localizations.dart';
 import 'services/backup_service.dart';
 import 'services/notification_service.dart';
 import 'services/pdf_service.dart';
@@ -41,17 +44,48 @@ enum _AuthScreen { welcome, login, register, verifyEmail }
 
 enum _AppMode { client, partner }
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const AumiauApp());
+  final localeController = AppLocaleController.persistent(
+    const LocalePreferenceStore(),
+  );
+  await localeController.load();
+  runApp(AumiauApp(localeController: localeController));
   unawaited(NotificationService.instance.initialize());
 }
 
-class AumiauApp extends StatelessWidget {
-  const AumiauApp({super.key, this.database, this.enableUpdateChecks = true});
+class AumiauApp extends StatefulWidget {
+  const AumiauApp({
+    super.key,
+    this.database,
+    this.enableUpdateChecks = true,
+    this.localeController,
+  });
 
   final AppDatabase? database;
   final bool enableUpdateChecks;
+  final AppLocaleController? localeController;
+
+  @override
+  State<AumiauApp> createState() => _AumiauAppState();
+}
+
+class _AumiauAppState extends State<AumiauApp> {
+  late final AppLocaleController _localeController;
+  late final bool _ownsLocaleController;
+
+  @override
+  void initState() {
+    super.initState();
+    _ownsLocaleController = widget.localeController == null;
+    _localeController = widget.localeController ?? AppLocaleController();
+  }
+
+  @override
+  void dispose() {
+    if (_ownsLocaleController) _localeController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -66,51 +100,63 @@ class AumiauApp extends StatelessWidget {
           surface: _paper,
         );
 
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'AuMiau',
-      locale: const Locale('pt', 'BR'),
-      supportedLocales: const [Locale('pt', 'BR')],
-      localizationsDelegates: GlobalMaterialLocalizations.delegates,
-      theme: ThemeData(
-        colorScheme: scheme,
-        scaffoldBackgroundColor: _paper,
-        useMaterial3: true,
-        fontFamily: 'sans',
-        appBarTheme: const AppBarTheme(
-          backgroundColor: _forest,
-          foregroundColor: Colors.white,
-          elevation: 0,
+    return AnimatedBuilder(
+      animation: _localeController,
+      builder: (context, _) => MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'AuMiau',
+        locale: _localeController.locale,
+        supportedLocales: supportedAppLocales,
+        localeResolutionCallback: (locale, supported) =>
+            resolveSupportedLocale(locale == null ? const [] : [locale]),
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
+        builder: (context, child) => AppLocaleScope(
+          controller: _localeController,
+          child: child ?? const SizedBox.shrink(),
         ),
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: Colors.white,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: _line),
+        theme: ThemeData(
+          colorScheme: scheme,
+          scaffoldBackgroundColor: _paper,
+          useMaterial3: true,
+          fontFamily: 'sans',
+          appBarTheme: const AppBarTheme(
+            backgroundColor: _forest,
+            foregroundColor: Colors.white,
+            elevation: 0,
           ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: _line),
+          inputDecorationTheme: InputDecorationTheme(
+            filled: true,
+            fillColor: Colors.white,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: _line),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: _line),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: _forest, width: 1.5),
+            ),
           ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: _forest, width: 1.5),
+          cardTheme: CardThemeData(
+            color: Colors.white,
+            elevation: 0,
+            margin: EdgeInsets.zero,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: const BorderSide(color: _line),
+            ),
           ),
         ),
-        cardTheme: CardThemeData(
-          color: Colors.white,
-          elevation: 0,
-          margin: EdgeInsets.zero,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: const BorderSide(color: _line),
-          ),
+        home: PersistentHomeShell(
+          database: widget.database,
+          enableUpdateChecks: widget.enableUpdateChecks,
         ),
-      ),
-      home: PersistentHomeShell(
-        database: database,
-        enableUpdateChecks: enableUpdateChecks,
       ),
     );
   }
@@ -6118,6 +6164,81 @@ class _AuthBubble extends StatelessWidget {
   );
 }
 
+class _LanguageSelector extends StatelessWidget {
+  const _LanguageSelector();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return Semantics(
+      button: true,
+      label: '${l10n.text('language.choose')}: ${l10n.languageName}',
+      child: OutlinedButton.icon(
+        onPressed: () => _showLanguagePicker(context),
+        icon: const Icon(Icons.language, size: 18),
+        label: Text(l10n.languageName),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: _forest,
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          side: const BorderSide(color: Color(0x551E4D40)),
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> _showLanguagePicker(BuildContext context) async {
+  final controller = AppLocaleScope.of(context);
+  final l10n = context.l10n;
+  await showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (sheetContext) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              l10n.text('language.choose'),
+              style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                color: _ink,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 8),
+            RadioGroup<Locale>(
+              groupValue: controller.locale,
+              onChanged: (locale) {
+                if (locale == null) return;
+                Navigator.pop(sheetContext);
+                unawaited(controller.setLocale(locale));
+              },
+              child: Column(
+                children: [
+                  for (final option in const [
+                    (locale: Locale('pt', 'BR'), label: 'Português'),
+                    (locale: Locale('en'), label: 'English'),
+                    (locale: Locale('es'), label: 'Español'),
+                  ])
+                    RadioListTile<Locale>(
+                      value: option.locale,
+                      title: Text(option.label),
+                      secondary: const Icon(Icons.translate, color: _forest),
+                      activeColor: _forest,
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
 class _PawPrintPatternPainter extends CustomPainter {
   const _PawPrintPatternPainter();
 
@@ -6208,45 +6329,54 @@ class _AuthWelcomeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return _AuthCard(
       topRightOverlay: const _AuthBetaBadge(),
       bottomOverlay: const _AuthTrustFooter(),
       children: [
         const SizedBox(height: 18),
         const _AuthBrand(showTagline: true),
-        const SizedBox(height: 30),
-        const Text(
-          'Cuide de quem ama',
+        const SizedBox(height: 12),
+        const _LanguageSelector(),
+        const SizedBox(height: 22),
+        Text(
+          l10n.text('auth.hero'),
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
             color: _ink,
             fontSize: 28,
             fontWeight: FontWeight.w800,
           ),
         ),
         const SizedBox(height: 10),
-        const Text(
-          'Rotina, saúde e carinho para seus pets em um só lugar.',
+        Text(
+          l10n.text('auth.subtitle'),
           textAlign: TextAlign.center,
-          style: TextStyle(color: _muted, fontSize: 16, height: 1.45),
+          style: const TextStyle(color: _muted, fontSize: 16, height: 1.45),
         ),
         const SizedBox(height: 34),
-        _AuthPrimaryButton(label: 'Entrar', onPressed: onLogin),
+        _AuthPrimaryButton(label: l10n.text('auth.login'), onPressed: onLogin),
         const SizedBox(height: 14),
-        _AuthOutlineButton(label: 'Criar conta', onPressed: onRegister),
+        _AuthOutlineButton(
+          label: l10n.text('auth.createAccount'),
+          onPressed: onRegister,
+        ),
         const SizedBox(height: 24),
         TextButton(
           onPressed: onOffline,
-          child: const Text(
-            'Usar aplicativo offline',
-            style: TextStyle(color: _authPinkDark, fontWeight: FontWeight.w700),
+          child: Text(
+            l10n.text('auth.offline'),
+            style: const TextStyle(
+              color: _authPinkDark,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
         const SizedBox(height: 6),
-        const Text(
-          'AuMiau Free Offline: seus dados ficam somente neste aparelho.',
+        Text(
+          l10n.text('auth.offlineNotice'),
           textAlign: TextAlign.center,
-          style: TextStyle(color: _muted, fontSize: 12),
+          style: const TextStyle(color: _muted, fontSize: 12),
         ),
       ],
     );
@@ -6258,7 +6388,7 @@ class _AuthBetaBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Semantics(
-    label: 'Versão beta para testes',
+    label: context.l10n.text('auth.betaSemantics'),
     child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
@@ -6289,49 +6419,51 @@ class _AuthBetaBadge extends StatelessWidget {
 class _AuthTrustFooter extends StatelessWidget {
   const _AuthTrustFooter();
 
-  Future<void> _showTrustDetails(BuildContext context) => showDialog<void>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      icon: const Icon(Icons.verified_user_outlined, color: _forest, size: 34),
-      title: const Text('Confiança e transparência'),
-      content: const SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Seus dados são transmitidos por conexão segura e tratados conforme a finalidade dos recursos do AuMiau.',
-            ),
-            SizedBox(height: 12),
-            Text(
-              'Os pagamentos do AuMiau Family são processados pelo Mercado Pago via Pix. O AuMiau não armazena dados bancários do usuário.',
-            ),
-            SizedBox(height: 16),
-            Divider(),
-            SizedBox(height: 12),
-            Text(
-              'Desenvolvido por C.A. Informática',
-              style: TextStyle(fontWeight: FontWeight.w800),
-            ),
-            SizedBox(height: 4),
-            Text('CNPJ: 04.368.187/0001-31'),
-          ],
+  Future<void> _showTrustDetails(BuildContext context) {
+    final l10n = context.l10n;
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(
+          Icons.verified_user_outlined,
+          color: _forest,
+          size: 34,
         ),
+        title: Text(l10n.text('trust.title')),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(l10n.text('trust.connection')),
+              const SizedBox(height: 12),
+              Text(l10n.text('trust.paymentDetails')),
+              const SizedBox(height: 16),
+              const Divider(),
+              const SizedBox(height: 12),
+              Text(
+                l10n.text('trust.company'),
+                style: const TextStyle(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 4),
+              const Text('CNPJ: 04.368.187/0001-31'),
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(l10n.text('common.understood')),
+          ),
+        ],
       ),
-      actions: [
-        FilledButton(
-          onPressed: () => Navigator.pop(dialogContext),
-          child: const Text('Entendi'),
-        ),
-      ],
-    ),
-  );
+    );
+  }
 
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
-    label:
-        'Dados protegidos. Pagamentos processados pelo Mercado Pago. Desenvolvido por C.A. Informática. Toque para saber mais.',
+    label: context.l10n.text('trust.semantics'),
     child: InkWell(
       onTap: () => _showTrustDetails(context),
       borderRadius: BorderRadius.circular(16),
@@ -6340,7 +6472,7 @@ class _AuthTrustFooter extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            const Expanded(
+            Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -6351,8 +6483,8 @@ class _AuthTrustFooter extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Dados protegidos',
-                          style: TextStyle(
+                          context.l10n.text('trust.dataProtected'),
+                          style: const TextStyle(
                             color: _ink,
                             fontSize: 12,
                             fontWeight: FontWeight.w800,
@@ -6360,8 +6492,8 @@ class _AuthTrustFooter extends StatelessWidget {
                         ),
                         SizedBox(height: 2),
                         Text(
-                          'Pagamentos processados pelo Mercado Pago',
-                          style: TextStyle(
+                          context.l10n.text('trust.payment'),
+                          style: const TextStyle(
                             color: _muted,
                             fontSize: 10,
                             height: 1.25,
@@ -6377,9 +6509,9 @@ class _AuthTrustFooter extends StatelessWidget {
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                const Text(
-                  'Desenvolvido por',
-                  style: TextStyle(color: _muted, fontSize: 9),
+                Text(
+                  context.l10n.text('trust.developedBy'),
+                  style: const TextStyle(color: _muted, fontSize: 9),
                 ),
                 const SizedBox(height: 3),
                 Row(
@@ -6390,7 +6522,7 @@ class _AuthTrustFooter extends StatelessWidget {
                       width: 24,
                       height: 24,
                       fit: BoxFit.contain,
-                      semanticLabel: 'Logo da C.A. Informática',
+                      semanticLabel: context.l10n.text('trust.logoSemantics'),
                     ),
                     const SizedBox(width: 5),
                     const Text(
@@ -6452,10 +6584,11 @@ class _AuthLoginViewState extends State<_AuthLoginView> {
   }
 
   Future<void> _submit() async {
+    final l10n = context.l10n;
     final email = _email.text.trim();
     if (!email.contains('@') || _password.text.length < 8) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Informe um e-mail e uma senha válida.')),
+        SnackBar(content: Text(l10n.text('auth.invalidCredentials'))),
       );
       return;
     }
@@ -6464,37 +6597,38 @@ class _AuthLoginViewState extends State<_AuthLoginView> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return _AuthCard(
       children: [
         _AuthBackButton(onPressed: widget.onBack),
         const _AuthBrand(),
         const SizedBox(height: 24),
-        const Text(
-          'Bem-vindo(a)! 👋',
+        Text(
+          l10n.text('auth.welcome'),
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
             color: _ink,
             fontSize: 28,
             fontWeight: FontWeight.w800,
           ),
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Entre para acompanhar a rotina dos seus pets.',
+        Text(
+          l10n.text('auth.loginSubtitle'),
           textAlign: TextAlign.center,
-          style: TextStyle(color: _muted, fontSize: 15),
+          style: const TextStyle(color: _muted, fontSize: 15),
         ),
         const SizedBox(height: 28),
         _AuthField(
           controller: _email,
-          label: 'E-mail',
+          label: l10n.text('common.email'),
           icon: Icons.mail_outline,
           keyboardType: TextInputType.emailAddress,
         ),
         const SizedBox(height: 14),
         _AuthField(
           controller: _password,
-          label: 'Senha',
+          label: l10n.text('common.password'),
           icon: Icons.lock_outline,
           obscureText: _obscure,
           suffix: IconButton(
@@ -6510,18 +6644,18 @@ class _AuthLoginViewState extends State<_AuthLoginView> {
           alignment: Alignment.centerRight,
           child: TextButton(
             onPressed: widget.busy ? null : widget.onRecovery,
-            child: const Text('Esqueci minha senha?'),
+            child: Text(l10n.text('auth.forgotPassword')),
           ),
         ),
         _AuthPrimaryButton(
-          label: 'Entrar',
+          label: l10n.text('auth.login'),
           busy: widget.busy,
           onPressed: _submit,
         ),
         const SizedBox(height: 22),
         _AuthFooterLink(
-          prefix: 'Ainda não tem conta? ',
-          action: 'Criar conta',
+          prefix: l10n.text('auth.noAccount'),
+          action: l10n.text('auth.createAccount'),
           onPressed: widget.onRegister,
         ),
       ],
@@ -6600,6 +6734,7 @@ class _AuthRegisterViewState extends State<_AuthRegisterView> {
   }
 
   Future<void> _submit() async {
+    final l10n = context.l10n;
     if (_name.text.trim().length < 2 ||
         _phone.text.trim().length < 8 ||
         !_email.text.contains('@') ||
@@ -6607,9 +6742,7 @@ class _AuthRegisterViewState extends State<_AuthRegisterView> {
         _password.text != _confirmPassword.text ||
         !_acceptedTerms) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Revise os dados e aceite os termos para continuar.'),
-        ),
+        SnackBar(content: Text(l10n.text('auth.reviewRegistration'))),
       );
       return;
     }
@@ -6624,53 +6757,56 @@ class _AuthRegisterViewState extends State<_AuthRegisterView> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     final birthLabel = _birthDate == null
-        ? 'Data de nascimento (opcional)'
+        ? l10n.text('auth.birthDate')
+        : l10n.locale.languageCode == 'en'
+        ? '${_birthDate!.year}-${_birthDate!.month.toString().padLeft(2, '0')}-${_birthDate!.day.toString().padLeft(2, '0')}'
         : '${_birthDate!.day.toString().padLeft(2, '0')}/${_birthDate!.month.toString().padLeft(2, '0')}/${_birthDate!.year}';
     return _AuthCard(
       children: [
         _AuthBackButton(onPressed: widget.onBack),
         const _AuthBrand(),
         const SizedBox(height: 22),
-        const Text(
-          'Criar conta',
+        Text(
+          l10n.text('auth.createAccount'),
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
             color: _ink,
             fontSize: 28,
             fontWeight: FontWeight.w800,
           ),
         ),
         const SizedBox(height: 6),
-        const Text(
-          'Vamos começar!',
+        Text(
+          l10n.text('auth.registerSubtitle'),
           textAlign: TextAlign.center,
-          style: TextStyle(color: _muted, fontSize: 16),
+          style: const TextStyle(color: _muted, fontSize: 16),
         ),
         const SizedBox(height: 24),
         _AuthField(
           controller: _name,
-          label: 'Nome completo',
+          label: l10n.text('auth.fullName'),
           icon: Icons.person_outline,
         ),
         const SizedBox(height: 12),
         _AuthField(
           controller: _phone,
-          label: 'Telefone/WhatsApp',
+          label: l10n.text('auth.phone'),
           icon: Icons.phone_outlined,
           keyboardType: TextInputType.phone,
         ),
         const SizedBox(height: 12),
         _AuthField(
           controller: _email,
-          label: 'E-mail',
+          label: l10n.text('common.email'),
           icon: Icons.mail_outline,
           keyboardType: TextInputType.emailAddress,
         ),
         const SizedBox(height: 12),
         _AuthField(
           controller: _password,
-          label: 'Senha (mínimo de 8 caracteres)',
+          label: l10n.text('auth.passwordHint'),
           icon: Icons.lock_outline,
           obscureText: _obscure,
           suffix: IconButton(
@@ -6685,7 +6821,7 @@ class _AuthRegisterViewState extends State<_AuthRegisterView> {
         const SizedBox(height: 12),
         _AuthField(
           controller: _confirmPassword,
-          label: 'Confirmar senha',
+          label: l10n.text('auth.confirmPassword'),
           icon: Icons.lock_reset_outlined,
           obscureText: _obscure,
         ),
@@ -6712,21 +6848,21 @@ class _AuthRegisterViewState extends State<_AuthRegisterView> {
           contentPadding: EdgeInsets.zero,
           activeColor: _authPink,
           controlAffinity: ListTileControlAffinity.leading,
-          title: const Text(
-            'Li e aceito os Termos de Uso e a Política de Privacidade.',
-            style: TextStyle(fontSize: 13, height: 1.35),
+          title: Text(
+            l10n.text('auth.acceptTerms'),
+            style: const TextStyle(fontSize: 13, height: 1.35),
           ),
         ),
         const SizedBox(height: 8),
         _AuthPrimaryButton(
-          label: 'Criar conta',
+          label: l10n.text('auth.createAccount'),
           busy: widget.busy,
           onPressed: _submit,
         ),
         const SizedBox(height: 22),
         _AuthFooterLink(
-          prefix: 'Já tem conta? ',
-          action: 'Entrar',
+          prefix: l10n.text('auth.hasAccount'),
+          action: l10n.text('auth.login'),
           onPressed: widget.onLogin,
         ),
       ],
@@ -6767,11 +6903,10 @@ class _AuthVerifyEmailViewState extends State<_AuthVerifyEmailView> {
   }
 
   Future<void> _submit() async {
+    final l10n = context.l10n;
     if (_token.text.trim().length < 32) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Informe o token completo enviado por e-mail.'),
-        ),
+        SnackBar(content: Text(l10n.text('auth.incompleteToken'))),
       );
       return;
     }
@@ -6780,6 +6915,7 @@ class _AuthVerifyEmailViewState extends State<_AuthVerifyEmailView> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
     return _AuthCard(
       children: [
         _AuthBackButton(onPressed: widget.onBack),
@@ -6787,10 +6923,10 @@ class _AuthVerifyEmailViewState extends State<_AuthVerifyEmailView> {
         const SizedBox(height: 28),
         const Icon(Icons.mark_email_read_outlined, color: _authPink, size: 62),
         const SizedBox(height: 18),
-        const Text(
-          'Confirme seu e-mail',
+        Text(
+          l10n.text('auth.confirmEmail'),
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
             color: _ink,
             fontSize: 26,
             fontWeight: FontWeight.w800,
@@ -6798,20 +6934,20 @@ class _AuthVerifyEmailViewState extends State<_AuthVerifyEmailView> {
         ),
         const SizedBox(height: 10),
         Text(
-          'Enviamos um token de confirmação para ${widget.email}.',
+          l10n.confirmationSent(widget.email),
           textAlign: TextAlign.center,
           style: const TextStyle(color: _muted, height: 1.45),
         ),
         const SizedBox(height: 26),
         _AuthField(
           controller: _token,
-          label: 'Token de confirmação',
+          label: l10n.text('auth.confirmationToken'),
           icon: Icons.key_outlined,
           keyboardType: TextInputType.text,
         ),
         const SizedBox(height: 18),
         _AuthPrimaryButton(
-          label: 'Confirmar e entrar',
+          label: l10n.text('auth.confirmAndLogin'),
           busy: widget.busy,
           onPressed: _submit,
         ),
@@ -6873,7 +7009,7 @@ class _AuthBrand extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     children: [
       Semantics(
-        label: 'AuMiau, gatinha e cachorrinho animados',
+        label: 'AuMiau',
         image: true,
         child: Image.asset(
           'assets/branding/aumiau_canva_animation.gif',
@@ -6885,9 +7021,9 @@ class _AuthBrand extends StatelessWidget {
       ),
       const SizedBox(height: 4),
       if (showTagline)
-        const Text(
-          'CUIDADO COM CARINHO',
-          style: TextStyle(
+        Text(
+          context.l10n.text('auth.tagline'),
+          style: const TextStyle(
             color: _muted,
             fontSize: 10,
             fontWeight: FontWeight.w800,
@@ -8901,6 +9037,13 @@ class ProfilePage extends StatelessWidget {
         Card(
           child: Column(
             children: [
+              _SettingsTile(
+                icon: Icons.language,
+                title: context.l10n.text('language.title'),
+                subtitle:
+                    '${context.l10n.text('language.subtitle')} · ${context.l10n.languageName}',
+                onTap: () => _showLanguagePicker(context),
+              ),
               _SettingsTile(
                 icon: Icons.notifications_none,
                 title: 'Notificações',
