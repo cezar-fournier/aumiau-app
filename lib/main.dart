@@ -6037,14 +6037,31 @@ class _AuthFlowPage extends StatelessWidget {
               child: _AuthBubble(size: 230, color: Color(0x221E4D40)),
             ),
             SafeArea(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 22, 24, 30),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 520),
-                    child: _buildScreen(context),
-                  ),
-                ),
+              child: LayoutBuilder(
+                builder: (context, viewport) {
+                  const verticalPadding = 20.0;
+                  final minimumContentHeight =
+                      viewport.maxHeight > verticalPadding * 2
+                      ? viewport.maxHeight - (verticalPadding * 2)
+                      : 0.0;
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(
+                      18,
+                      verticalPadding,
+                      18,
+                      verticalPadding,
+                    ),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: 520,
+                          minHeight: minimumContentHeight,
+                        ),
+                        child: _buildScreen(context),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ],
