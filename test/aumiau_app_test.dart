@@ -835,6 +835,28 @@ void main() {
     await database.close();
   });
 
+  testWidgets('exibe informações de confiança e da desenvolvedora', (
+    tester,
+  ) async {
+    final database = AppDatabase.fromExecutor(NativeDatabase.memory());
+    await tester.pumpWidget(
+      AumiauApp(database: database, enableUpdateChecks: false),
+    );
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('Dados protegidos'), findsOneWidget);
+    expect(find.text('C.A. Informática'), findsOneWidget);
+    await tester.ensureVisible(find.text('Dados protegidos'));
+    await tester.tap(find.text('Dados protegidos'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Confiança e transparência'), findsOneWidget);
+    expect(find.text('CNPJ: 04.368.187/0001-31'), findsOneWidget);
+    expect(find.text('Entendi'), findsOneWidget);
+
+    await database.close();
+  });
+
   testWidgets('cancelar cadastro profissional fecha o diálogo sem crash', (
     tester,
   ) async {

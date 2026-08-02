@@ -6229,10 +6229,138 @@ class _AuthWelcomeView extends StatelessWidget {
           textAlign: TextAlign.center,
           style: TextStyle(color: _muted, fontSize: 12),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 22),
+        const _AuthTrustFooter(),
+        const SizedBox(height: 4),
       ],
     );
   }
+}
+
+class _AuthTrustFooter extends StatelessWidget {
+  const _AuthTrustFooter();
+
+  Future<void> _showTrustDetails(BuildContext context) => showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      icon: const Icon(Icons.verified_user_outlined, color: _forest, size: 34),
+      title: const Text('Confiança e transparência'),
+      content: const SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Seus dados são transmitidos por conexão segura e tratados conforme a finalidade dos recursos do AuMiau.',
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Os pagamentos do AuMiau Family são processados pelo Mercado Pago via Pix. O AuMiau não armazena dados bancários do usuário.',
+            ),
+            SizedBox(height: 16),
+            Divider(),
+            SizedBox(height: 12),
+            Text(
+              'Desenvolvido por C.A. Informática',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            SizedBox(height: 4),
+            Text('CNPJ: 04.368.187/0001-31'),
+          ],
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('Entendi'),
+        ),
+      ],
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    label:
+        'Dados protegidos. Pagamentos processados pelo Mercado Pago. Desenvolvido por C.A. Informática. Toque para saber mais.',
+    child: InkWell(
+      onTap: () => _showTrustDetails(context),
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            const Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.verified_user_outlined, size: 20, color: _forest),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Dados protegidos',
+                          style: TextStyle(
+                            color: _ink,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Pagamentos processados pelo Mercado Pago',
+                          style: TextStyle(
+                            color: _muted,
+                            fontSize: 10,
+                            height: 1.25,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                const Text(
+                  'Desenvolvido por',
+                  style: TextStyle(color: _muted, fontSize: 9),
+                ),
+                const SizedBox(height: 3),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Image.asset(
+                      'assets/branding/ca_informatica_logo.png',
+                      width: 24,
+                      height: 24,
+                      fit: BoxFit.contain,
+                      semanticLabel: 'Logo da C.A. Informática',
+                    ),
+                    const SizedBox(width: 5),
+                    const Text(
+                      'C.A. Informática',
+                      style: TextStyle(
+                        color: _forest,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 class _AuthLoginView extends StatefulWidget {
