@@ -468,6 +468,23 @@ class HttpSyncGateway implements SyncGateway {
     return _decodeObject(response);
   }
 
+  Future<Map<String, dynamic>> verifyGooglePlayPurchase({
+    required String accessToken,
+    required String productId,
+    required String purchaseToken,
+  }) async {
+    final response = await _post(
+      'billing/verify',
+      body: {
+        'provider': 'google_play',
+        'productId': productId,
+        'purchaseToken': purchaseToken,
+      },
+      accessToken: accessToken,
+    );
+    return _decodeObject(response);
+  }
+
   @override
   Future<SyncBatchAck> pushBatch({
     required Map<String, dynamic> payload,

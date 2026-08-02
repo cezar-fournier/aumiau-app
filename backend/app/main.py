@@ -47,6 +47,11 @@ from app.mfa import (
 )
 from app.migrations import apply_migrations
 from app.observability import RequestMetrics, configure_json_logger, monotonic_seconds, resolve_request_id
+from app.play_billing import (
+    GooglePlayClient,
+    GooglePlayConfigurationError,
+    GooglePlayVerificationError,
+)
 from app.security import InMemoryRateLimiter, rate_limit_for
 
 
@@ -78,6 +83,8 @@ SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME).strip()
 AUMIAU_WEB_URL = os.getenv("AUMIAU_WEB_URL", "https://aumiau.app.br").rstrip("/")
 PARTNER_DOCUMENTS_DIR = os.getenv("PARTNER_DOCUMENTS_DIR", "/data/partner-documents")
 METRICS_TOKEN = os.getenv("METRICS_TOKEN", "").strip()
+GOOGLE_PLAY_PACKAGE_NAME = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.aumiau.aumiau_app").strip()
+GOOGLE_PLAY_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE", "").strip()
 logger = configure_json_logger("aumiau.api")
 STARTED_AT = time.monotonic()
 
@@ -3878,15 +3885,151 @@ async def mercadopago_webhook(
 @app.post("/billing/verify")
 def verify_billing_purchase(
     request: BillingVerifyRequest,
-    _: dict[str, Any] = Depends(current_user),
-) -> dict[str, str]:
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail=(
-            "A verificação do Google Play será habilitada quando o aplicativo "
-            "estiver configurado na Play Console. Nenhum acesso pago foi concedido."
-        ),
-    )
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    if request.provider != "google_play":
+        raise HTTPException(status_code=422, detail="Provedor de compra não suportado.")
+    product = BILLING_PRODUCTS.get(request.productId)
+    if product is None or product.get("entitlementKey") != "family_access":
+        raise HTTPException(status_code=422, detail="Produto Family inválido.")
+    try:
+        client = GooglePlayClient(
+            package_name=GOOGLE_PLAY_PACKAGE_NAME,
+            service_account_file=GOOGLE_PLAY_SERVICE_ACCOUNT_FILE,
+        )
+        subscription = client.verify_subscription(
+            product_id=request.productId,
+            purchase_token=request.purchaseToken,
+        )
+    except GooglePlayConfigurationError as error:
+        logger.error("google_play_configuration_error error=%s", error)
+        raise HTTPException(status_code=503, detail="Google Play Billing ainda não está configurado.") from error
+    except GooglePlayVerificationError as error:
+        logger.warning("google_play_verification_failed user_id=%s error=%s", user["sub"], error)
+        raise HTTPException(status_code=422, detail="Não foi possível validar esta assinatura no Google Play.") from error
+
+    user_id = int(user["sub"])
+    token_hash = hashlib.sha256(request.purchaseToken.encode()).hexdigest()
+    now = utc_now()
+    entitlement_status = "active" if subscription.grants_entitlement else "pending"
+    if subscription.expires_at and subscription.expires_at <= now:
+        entitlement_status = "expired"
+
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id FROM subscriptions WHERE purchase_token_hash = %s FOR UPDATE",
+                (token_hash,),
+            )
+            existing = cursor.fetchone()
+            if existing is not None and int(existing[0]) != user_id:
+                raise HTTPException(status_code=409, detail="Esta assinatura já pertence a outra conta.")
+            cursor.execute(
+                """
+                INSERT INTO subscriptions
+                    (user_id, provider, product_id, purchase_token_hash,
+                     order_id, status, environment, auto_renew,
+                     started_at, expires_at, verified_at, updated_at)
+                VALUES (%s, 'google_play', %s, %s, %s, %s, 'production', %s,
+                        %s, %s, %s, now())
+                ON CONFLICT (purchase_token_hash) DO UPDATE SET
+                    product_id = EXCLUDED.product_id,
+                    order_id = EXCLUDED.order_id,
+                    status = EXCLUDED.status,
+                    auto_renew = EXCLUDED.auto_renew,
+                    started_at = EXCLUDED.started_at,
+                    expires_at = EXCLUDED.expires_at,
+                    verified_at = EXCLUDED.verified_at,
+                    updated_at = now()
+                """,
+                (
+                    user_id,
+                    request.productId,
+                    token_hash,
+                    subscription.order_id,
+                    subscription.state,
+                    subscription.auto_renew,
+                    subscription.started_at,
+                    subscription.expires_at,
+                    now,
+                ),
+            )
+            cursor.execute(
+                """
+                SELECT provider, started_at, expires_at
+                FROM subscriptions
+                WHERE user_id = %s
+                  AND product_id IN ('family_monthly', 'family_yearly')
+                  AND expires_at > %s
+                  AND status IN (
+                      'active',
+                      'SUBSCRIPTION_STATE_ACTIVE',
+                      'SUBSCRIPTION_STATE_IN_GRACE_PERIOD',
+                      'SUBSCRIPTION_STATE_CANCELED'
+                  )
+                ORDER BY expires_at DESC
+                LIMIT 1
+                """,
+                (user_id, now),
+            )
+            effective_subscription = cursor.fetchone()
+            if effective_subscription is not None:
+                entitlement_status = "active"
+                entitlement_source = effective_subscription[0]
+                entitlement_start = effective_subscription[1] or now
+                entitlement_until = effective_subscription[2]
+            else:
+                entitlement_source = "google_play"
+                entitlement_start = subscription.started_at or now
+                entitlement_until = subscription.expires_at
+            cursor.execute(
+                """
+                INSERT INTO entitlements
+                    (user_id, entitlement_key, source, status,
+                     valid_from, valid_until, updated_at)
+                VALUES (%s, 'family_access', %s, %s, %s, %s, now())
+                ON CONFLICT (user_id, entitlement_key) DO UPDATE SET
+                    source = 'google_play',
+                    status = EXCLUDED.status,
+                    valid_from = EXCLUDED.valid_from,
+                    valid_until = EXCLUDED.valid_until,
+                    updated_at = now()
+                """,
+                (
+                    user_id,
+                    entitlement_source,
+                    entitlement_status,
+                    entitlement_start,
+                    entitlement_until,
+                ),
+            )
+            if entitlement_status == "active":
+                cursor.execute(
+                    "UPDATE users SET edition = 'family', plan_code = 'family' WHERE id = %s",
+                    (user_id,),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE users SET edition = 'free_offline', plan_code = 'free_offline' WHERE id = %s",
+                    (user_id,),
+                )
+
+    if subscription.grants_entitlement and not subscription.acknowledged:
+        try:
+            client.acknowledge(product_id=request.productId, purchase_token=request.purchaseToken)
+        except GooglePlayVerificationError as error:
+            logger.error("google_play_acknowledge_failed user_id=%s token_hash=%s error=%s", user_id, token_hash[:12], error)
+            raise HTTPException(
+                status_code=502,
+                detail="Assinatura validada, mas o reconhecimento no Google Play falhou. Tente restaurar a compra.",
+            ) from error
+
+    return {
+        "status": entitlement_status,
+        "productId": subscription.product_id,
+        "validUntil": entitlement_until.isoformat() if entitlement_until else None,
+        "autoRenew": subscription.auto_renew,
+    }
 
 
 @app.get("/admin/users")

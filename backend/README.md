@@ -112,6 +112,26 @@ depois cria a assinatura e ativa o entitlement `family_access`. O token e a
 chave do webhook nunca devem ser colocados no APK, no Git ou enviados pelo
 chat.
 
+## Google Play Billing Family
+
+O aplicativo consulta os produtos `family_monthly` e `family_yearly` na Play
+Store. Compras e restaurações enviam o `purchaseToken` autenticado para
+`POST /billing/verify`. O backend consulta `purchases.subscriptionsv2.get`,
+reconcilia todas as assinaturas Family da conta e reconhece compras novas no
+servidor. O APK nunca concede o entitlement diretamente.
+
+Configure somente na VPS:
+
+```bash
+GOOGLE_PLAY_PACKAGE_NAME=com.aumiau.aumiau_app
+GOOGLE_PLAY_SERVICE_ACCOUNT_FILE=/run/secrets/google-play-service-account.json
+```
+
+O JSON da conta de serviço deve ser montado como arquivo somente leitura, não
+deve entrar na imagem Docker, no Git, em logs ou no aplicativo. A conta precisa
+ter acesso ao app na Play Console e permissão para consultar e gerenciar pedidos
+e assinaturas.
+
 ## Cadastro de usuários
 
 O aplicativo oferece cadastro público em `POST /auth/register`. O usuário informa

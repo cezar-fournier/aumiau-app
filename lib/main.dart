@@ -6,6 +6,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -18,6 +19,7 @@ import 'domain/product_plan.dart';
 import 'services/backup_service.dart';
 import 'services/notification_service.dart';
 import 'services/pdf_service.dart';
+import 'services/play_billing_service.dart';
 import 'services/session_store.dart';
 import 'services/sync_gateway.dart';
 import 'services/sync_service.dart';
@@ -745,6 +747,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   LocalProfile _profile = LocalProfile.defaultProfile();
   int _pendingSyncCount = 0;
   late final HttpSyncGateway _syncGateway;
+  late final PlayBillingService _playBilling;
   late final SessionStore _sessionStore;
   String? _accessToken;
   bool _syncing = false;
@@ -767,6 +770,13 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     super.initState();
     _database = widget.database ?? AppDatabase();
     _syncGateway = HttpSyncGateway(baseUri: AppConfig.apiBaseUri);
+    _playBilling = PlayBillingService();
+    unawaited(
+      _playBilling.initialize(
+        verifier: _verifyGooglePlayPurchase,
+        onMessage: _showProductMessage,
+      ),
+    );
     _sessionStore = SessionStore();
     _today = DateTime.now();
     unawaited(_initializeApp());
@@ -777,6 +787,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   @override
   void dispose() {
+    unawaited(_playBilling.dispose());
     if (widget.database == null) unawaited(_database.close());
     super.dispose();
   }
@@ -3699,10 +3710,16 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   Future<void> _showSubscriptionOptions() async {
     Map<String, dynamic> catalog = const {};
+    Map<String, ProductDetails> playProducts = const {};
     try {
       catalog = await _syncGateway.loadBillingCatalog();
     } catch (_) {
       // Os preços de referência abaixo mantêm a tela útil durante o modo offline.
+    }
+    try {
+      playProducts = await _playBilling.loadProducts();
+    } catch (_) {
+      // O Pix continua disponível quando a loja não puder ser consultada.
     }
     if (!mounted) return;
     final products = catalog['products'] is List
@@ -3744,6 +3761,54 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       });
     }
 
+    Future<void> openPlan(
+      BuildContext dialogContext,
+      String productId,
+      String planName,
+      double fallback,
+    ) async {
+      final playProduct = playProducts[productId];
+      await showDialog<void>(
+        context: dialogContext,
+        builder: (paymentContext) => AlertDialog(
+          title: Text(planName),
+          content: Text(
+            playProduct == null
+                ? 'O Google Play não disponibilizou este plano neste aparelho. Você ainda pode pagar com Pix.'
+                : 'Escolha como deseja assinar. A validação do Google Play e do Pix acontece no servidor.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(paymentContext);
+                openPix(dialogContext, productId, planName, fallback);
+              },
+              child: const Text('Pagar com Pix'),
+            ),
+            if (playProduct != null)
+              FilledButton.icon(
+                onPressed: () async {
+                  Navigator.pop(paymentContext);
+                  Navigator.pop(dialogContext);
+                  final session = await _sessionStore.read();
+                  final started = await _playBilling.purchase(
+                    playProduct,
+                    accountName: session?.email,
+                  );
+                  if (!started) {
+                    _showProductMessage(
+                      'O Google Play não conseguiu iniciar a compra.',
+                    );
+                  }
+                },
+                icon: const Icon(Icons.play_circle_outline),
+                label: Text('Google Play • ${playProduct.price}'),
+              ),
+          ],
+        ),
+      );
+    }
+
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -3764,12 +3829,12 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 color: _forest,
               ),
               title: const Text('Plano mensal'),
-              subtitle: const Text('Pagamento seguro via Mercado Pago'),
+              subtitle: const Text('Google Play ou Pix via Mercado Pago'),
               trailing: Text(
                 pixPriceFor('family_monthly', 2.99),
                 textAlign: TextAlign.end,
               ),
-              onTap: () => openPix(
+              onTap: () => openPlan(
                 dialogContext,
                 'family_monthly',
                 'Family mensal',
@@ -3783,12 +3848,12 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 color: _forest,
               ),
               title: const Text('Plano anual'),
-              subtitle: const Text('Pagamento seguro via Mercado Pago'),
+              subtitle: const Text('Google Play ou Pix via Mercado Pago'),
               trailing: Text(
                 pixPriceFor('family_yearly', 25.00),
                 textAlign: TextAlign.end,
               ),
-              onTap: () => openPix(
+              onTap: () => openPlan(
                 dialogContext,
                 'family_yearly',
                 'Family anual',
@@ -3803,6 +3868,17 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
           ],
         ),
         actions: [
+          if (_playBilling.supported)
+            TextButton(
+              onPressed: () async {
+                await _playBilling.restore();
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+                _showProductMessage(
+                  'Consultando compras anteriores no Google Play...',
+                );
+              },
+              child: const Text('Restaurar compras'),
+            ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Entendi'),
@@ -4223,6 +4299,35 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     await _loadRemoteAppointments();
     await _synchronizePartnerProfile();
     unawaited(_syncPrivateVeterinaryContacts());
+  }
+
+  Future<bool> _verifyGooglePlayPurchase(
+    String productId,
+    String purchaseToken,
+  ) async {
+    final accessToken = _accessToken;
+    if (accessToken == null) {
+      _showProductMessage('Entre na sua conta antes de validar a assinatura.');
+      return false;
+    }
+    try {
+      final result = await _syncGateway.verifyGooglePlayPurchase(
+        accessToken: accessToken,
+        productId: productId,
+        purchaseToken: purchaseToken,
+      );
+      await _refreshAccountEntitlement();
+      final active = result['status'] == 'active';
+      _showProductMessage(
+        active
+            ? 'Assinatura confirmada. O AuMiau Family está ativo.'
+            : 'A assinatura ainda está pendente no Google Play.',
+      );
+      return active;
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(error.message);
+      return false;
+    }
   }
 
   Future<void> _refreshAccountEntitlement() async {
