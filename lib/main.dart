@@ -3774,17 +3774,20 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
           title: Text(planName),
           content: Text(
             playProduct == null
-                ? 'O Google Play não disponibilizou este plano neste aparelho. Você ainda pode pagar com Pix.'
-                : 'Escolha como deseja assinar. A validação do Google Play e do Pix acontece no servidor.',
+                ? _playBilling.supported
+                      ? 'O Google Play não disponibilizou este plano neste aparelho. Verifique a conta da Play Store e tente novamente.'
+                      : 'Este dispositivo não usa o Google Play. O pagamento por Pix permanece disponível.'
+                : 'A assinatura será processada e gerenciada com segurança pelo Google Play.',
           ),
           actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(paymentContext);
-                openPix(dialogContext, productId, planName, fallback);
-              },
-              child: const Text('Pagar com Pix'),
-            ),
+            if (!_playBilling.supported)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(paymentContext);
+                  openPix(dialogContext, productId, planName, fallback);
+                },
+                child: const Text('Pagar com Pix'),
+              ),
             if (playProduct != null)
               FilledButton.icon(
                 onPressed: () async {
@@ -3829,7 +3832,11 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 color: _forest,
               ),
               title: const Text('Plano mensal'),
-              subtitle: const Text('Google Play ou Pix via Mercado Pago'),
+              subtitle: Text(
+                _playBilling.supported
+                    ? 'Assinatura pelo Google Play'
+                    : 'Pagamento via Mercado Pago',
+              ),
               trailing: Text(
                 pixPriceFor('family_monthly', 2.99),
                 textAlign: TextAlign.end,
@@ -3848,7 +3855,11 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 color: _forest,
               ),
               title: const Text('Plano anual'),
-              subtitle: const Text('Google Play ou Pix via Mercado Pago'),
+              subtitle: Text(
+                _playBilling.supported
+                    ? 'Assinatura pelo Google Play'
+                    : 'Pagamento via Mercado Pago',
+              ),
               trailing: Text(
                 pixPriceFor('family_yearly', 25.00),
                 textAlign: TextAlign.end,
@@ -3862,7 +3873,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Para assinar, entre ou crie uma conta. O Mercado Pago confirmará o pagamento e liberará o Family automaticamente.',
+              'Para assinar, entre ou crie uma conta. No Android, a assinatura é processada pelo Google Play e validada pelo servidor.',
               style: TextStyle(fontSize: 12, color: _muted, height: 1.35),
             ),
           ],
