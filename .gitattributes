@@ -1,3 +1,5 @@
 # Migrações aplicadas são imutáveis e verificadas por SHA-256 em produção.
 # Preserve os bytes originais, inclusive as quebras de linha.
 backend/migrations/*.sql -text
+# Scripts e unidades Linux devem manter quebras de linha LF.
+backend/ops/aumiau-* text eol=lf
