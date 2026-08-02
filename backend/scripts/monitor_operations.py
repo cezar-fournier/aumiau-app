@@ -12,7 +12,17 @@ from urllib.request import Request, urlopen
 
 
 def latest_backup_age_hours(root: Path, *, now: float | None = None) -> float | None:
-    directories = [entry for entry in root.iterdir() if entry.is_dir()] if root.is_dir() else []
+    required_files = ("aumiau-postgres.dump", "partner-documents.tar.gz", "SHA256SUMS")
+    directories = (
+        [
+            entry
+            for entry in root.iterdir()
+            if entry.is_dir()
+            and all((entry / name).is_file() and (entry / name).stat().st_size > 0 for name in required_files)
+        ]
+        if root.is_dir()
+        else []
+    )
     if not directories:
         return None
     newest = max(entry.stat().st_mtime for entry in directories)

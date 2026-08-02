@@ -9,12 +9,23 @@ def test_latest_backup_age_uses_newest_directory(tmp_path: Path) -> None:
     newer = tmp_path / "newer"
     older.mkdir()
     newer.mkdir()
+    for directory in (older, newer):
+        (directory / "aumiau-postgres.dump").write_bytes(b"dump")
+        (directory / "partner-documents.tar.gz").write_bytes(b"docs")
+        (directory / "SHA256SUMS").write_text("checksums")
     os.utime(older, (100, 100))
     os.utime(newer, (200, 200))
     assert latest_backup_age_hours(tmp_path, now=3800) == 1.0
 
 
 def test_latest_backup_age_reports_missing_backup(tmp_path: Path) -> None:
+    assert latest_backup_age_hours(tmp_path, now=1000) is None
+
+
+def test_latest_backup_age_ignores_incomplete_directory(tmp_path: Path) -> None:
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    (incomplete / "aumiau-postgres.dump").write_bytes(b"dump")
     assert latest_backup_age_hours(tmp_path, now=1000) is None
 
 
