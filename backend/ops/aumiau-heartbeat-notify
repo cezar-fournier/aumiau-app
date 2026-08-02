@@ -4,6 +4,12 @@ set -Eeuo pipefail
 AUMIAU_HEARTBEAT_STATUS="${1:?Informe success ou fail.}"
 AUMIAU_HEARTBEAT_SERVICE="${2:?Informe o nome do serviço.}"
 AUMIAU_HEARTBEAT_BASE="${AUMIAU_HEARTBEAT_URL:?AUMIAU_HEARTBEAT_URL ausente.}"
+AUMIAU_HEARTBEAT_BASE="${AUMIAU_HEARTBEAT_BASE%$'\r'}"
+
+if [[ ! "$AUMIAU_HEARTBEAT_BASE" =~ ^https://uptime\.betterstack\.com/api/v1/heartbeat/[^/[:space:]]+/?$ ]]; then
+  echo "URL de heartbeat inválida." >&2
+  exit 2
+fi
 
 case "$AUMIAU_HEARTBEAT_STATUS" in
   success)
