@@ -53,7 +53,9 @@ class BackupService {
     if (result == null || result.files.isEmpty) return;
     final bytes = result.files.single.bytes;
     if (bytes == null || bytes.isEmpty) {
-      throw const FormatException('Não foi possível ler o arquivo selecionado.');
+      throw const FormatException(
+        'Não foi possível ler o arquivo selecionado.',
+      );
     }
 
     final decoded = jsonDecode(utf8.decode(bytes));

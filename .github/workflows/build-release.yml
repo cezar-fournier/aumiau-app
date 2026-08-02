@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
@@ -32,12 +33,28 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Install, analyze and test partner app
-        working-directory: partner_app
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Test backend
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://unused:unused@localhost:5432/unused
+          JWT_SECRET: ci-only-secret-not-used-in-production
         run: |
-          flutter pub get
-          flutter analyze
-          flutter test
+          python -m pip install -r requirements-dev.txt
+          python -m compileall -q app scripts
+          python -m pytest -q
+
+      - name: Audit Python dependencies
+        working-directory: backend
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit -r requirements.txt
 
       - name: Validate production signing secrets
         if: startsWith(github.ref, 'refs/tags/v')
@@ -71,7 +88,6 @@ jobs:
             echo "keyAlias=$ANDROID_KEY_ALIAS"
             echo "keyPassword=$ANDROID_KEY_PASSWORD"
           } > android/key.properties
-          cp android/key.properties partner_app/android/key.properties
 
       - name: Build release APK and AAB
         shell: bash
@@ -96,14 +112,14 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk \
             "build/app/outputs/flutter-apk/aumiau-${GITHUB_REF_NAME}.apk"
 
-          pushd partner_app
-          flutter build appbundle "${common_args[@]}"
-          flutter build apk "${common_args[@]}"
-          cp build/app/outputs/bundle/release/app-release.aab \
-            "build/app/outputs/bundle/release/aumiau-partner-${GITHUB_REF_NAME}.aab"
-          cp build/app/outputs/flutter-apk/app-release.apk \
-            "build/app/outputs/flutter-apk/aumiau-partner-${GITHUB_REF_NAME}.apk"
-          popd
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: build/aumiau-${{ github.ref_name }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -112,8 +128,7 @@ jobs:
           path: |
             build/app/outputs/bundle/release/aumiau-${{ github.ref_name }}.aab
             build/app/outputs/flutter-apk/aumiau-${{ github.ref_name }}.apk
-            partner_app/build/app/outputs/bundle/release/aumiau-partner-${{ github.ref_name }}.aab
-            partner_app/build/app/outputs/flutter-apk/aumiau-partner-${{ github.ref_name }}.apk
+            build/aumiau-${{ github.ref_name }}.spdx.json
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -124,12 +139,11 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "build/app/outputs/bundle/release/aumiau-${GITHUB_REF_NAME}.aab" \
             "build/app/outputs/flutter-apk/aumiau-${GITHUB_REF_NAME}.apk" \
-            "partner_app/build/app/outputs/bundle/release/aumiau-partner-${GITHUB_REF_NAME}.aab" \
-            "partner_app/build/app/outputs/flutter-apk/aumiau-partner-${GITHUB_REF_NAME}.apk" \
+            "build/aumiau-${GITHUB_REF_NAME}.spdx.json" \
             --title "AuMiau $GITHUB_REF_NAME" \
             --generate-notes
 
       - name: Remove signing material
         if: always() && startsWith(github.ref, 'refs/tags/v')
         run: |
-          rm -f android/key.properties partner_app/android/key.properties "$RUNNER_TEMP/aumiau-release.jks"
+          rm -f android/key.properties "$RUNNER_TEMP/aumiau-release.jks"

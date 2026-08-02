@@ -64,6 +64,7 @@ app.*.map.json
 # Local backend/mail configuration and data
 /backend/.env
 /backend/**/__pycache__/
+/backend/backups/
 /mail/.env
 /mail/docker-data/
 /mail/mail-credentials.txt

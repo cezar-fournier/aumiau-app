@@ -1,7 +1,10 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
+
+import 'account_scope.dart';
 
 part 'app_database.g.dart';
 
@@ -29,6 +32,8 @@ class Pets extends Table {
   TextColumn get documentNotes => text().withDefault(const Constant(''))();
   TextColumn get photoData => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+  TextColumn get syncId => text().withDefault(const Constant(''))();
+  IntColumn get syncVersion => integer().withDefault(const Constant(0))();
 }
 
 class Reminders extends Table {
@@ -53,6 +58,8 @@ class Vaccines extends Table {
   TextColumn get clinicName => text().nullable()();
   TextColumn get batchNumber => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+  TextColumn get syncId => text().withDefault(const Constant(''))();
+  IntColumn get syncVersion => integer().withDefault(const Constant(0))();
 }
 
 class PreventiveRecords extends Table {
@@ -79,6 +86,8 @@ class MedicationPlans extends Table {
   DateTimeColumn get lastTakenAt => dateTime().nullable()();
   TextColumn get notes => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+  TextColumn get syncId => text().withDefault(const Constant(''))();
+  IntColumn get syncVersion => integer().withDefault(const Constant(0))();
 }
 
 class FamilyInvitations extends Table {
@@ -127,6 +136,8 @@ class WeightEntries extends Table {
   DateTimeColumn get measuredAt => dateTime()();
   TextColumn get note => text().nullable()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
+  TextColumn get syncId => text().withDefault(const Constant(''))();
+  IntColumn get syncVersion => integer().withDefault(const Constant(0))();
 }
 
 class UserProfiles extends Table {
@@ -148,6 +159,15 @@ class SyncOperations extends Table {
   DateTimeColumn get syncedAt => dateTime().nullable()();
 }
 
+class SyncStates extends Table {
+  IntColumn get id => integer().withDefault(const Constant(1))();
+  IntColumn get revision => integer().withDefault(const Constant(0))();
+  DateTimeColumn get updatedAt => dateTime().withDefault(currentDateAndTime)();
+
+  @override
+  Set<Column<Object>> get primaryKey => {id};
+}
+
 @DriftDatabase(
   tables: [
     Pets,
@@ -161,27 +181,36 @@ class SyncOperations extends Table {
     WeightEntries,
     UserProfiles,
     SyncOperations,
+    SyncStates,
   ],
 )
 final class AppDatabase extends _$AppDatabase {
-  AppDatabase({QueryExecutor? executor, this.seedDemoData = false})
-    : super(
-        executor ??
-            driftDatabase(
-              name: 'aumiau_app',
-              web: DriftWebOptions(
-                sqlite3Wasm: Uri.parse('sqlite3.wasm'),
-                driftWorker: Uri.parse('drift_worker.dart.js'),
-              ),
-            ),
-      );
+  AppDatabase({
+    QueryExecutor? executor,
+    this.seedDemoData = false,
+    String databaseName = 'aumiau_app',
+  }) : super(
+         executor ??
+             driftDatabase(
+               name: databaseName,
+               web: DriftWebOptions(
+                 sqlite3Wasm: Uri.parse('sqlite3.wasm'),
+                 driftWorker: Uri.parse('drift_worker.dart.js'),
+               ),
+             ),
+       );
 
   AppDatabase.fromExecutor(super.executor, {this.seedDemoData = true});
+
+  factory AppDatabase.forAccount(String email) => AppDatabase(
+    databaseName: accountDatabaseName(email),
+    seedDemoData: false,
+  );
 
   final bool seedDemoData;
 
   @override
-  int get schemaVersion => 10;
+  int get schemaVersion => 13;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -255,6 +284,33 @@ final class AppDatabase extends _$AppDatabase {
       }
       if (from < 10) {
         await m.createTable(veterinaryContacts);
+      }
+      if (from < 11) {
+        await m.createTable(syncStates);
+      }
+      if (from < 12) {
+        await m.addColumn(pets, pets.syncId);
+        await m.addColumn(pets, pets.syncVersion);
+        await customStatement(
+          "UPDATE pets SET sync_id = lower(hex(randomblob(16))) WHERE sync_id = ''",
+        );
+      }
+      if (from < 13) {
+        await m.addColumn(vaccines, vaccines.syncId);
+        await m.addColumn(vaccines, vaccines.syncVersion);
+        await m.addColumn(weightEntries, weightEntries.syncId);
+        await m.addColumn(weightEntries, weightEntries.syncVersion);
+        await m.addColumn(medicationPlans, medicationPlans.syncId);
+        await m.addColumn(medicationPlans, medicationPlans.syncVersion);
+        await customStatement(
+          "UPDATE vaccines SET sync_id = lower(hex(randomblob(16))) WHERE sync_id = ''",
+        );
+        await customStatement(
+          "UPDATE weight_entries SET sync_id = lower(hex(randomblob(16))) WHERE sync_id = ''",
+        );
+        await customStatement(
+          "UPDATE medication_plans SET sync_id = lower(hex(randomblob(16))) WHERE sync_id = ''",
+        );
       }
     },
   );
@@ -419,12 +475,29 @@ final class AppDatabase extends _$AppDatabase {
         .write(SyncOperationsCompanion(syncedAt: Value(DateTime.now())));
   }
 
+  Future<int> loadSyncRevision() async =>
+      (await (select(
+        syncStates,
+      )..where((row) => row.id.equals(1))).getSingleOrNull())?.revision ??
+      0;
+
+  Future<void> saveSyncRevision(int revision) async {
+    await into(syncStates).insertOnConflictUpdate(
+      SyncStatesCompanion.insert(
+        id: const Value(1),
+        revision: Value(revision),
+        updatedAt: Value(DateTime.now()),
+      ),
+    );
+  }
+
   Future<void> saveProfile({
     required String name,
     required String email,
     String? plan,
     DateTime? familyValidUntil,
     bool preserveFamilyValidUntil = true,
+    bool recordSyncOperation = true,
   }) async {
     final profile = await loadProfile();
     if (profile == null) {
@@ -436,7 +509,9 @@ final class AppDatabase extends _$AppDatabase {
           familyValidUntil: Value(familyValidUntil),
         ),
       );
-      await _recordSync('profile', id, 'upsert');
+      if (recordSyncOperation) {
+        await _recordSync('profile', id, 'upsert');
+      }
       return;
     }
     await (update(
@@ -452,7 +527,9 @@ final class AppDatabase extends _$AppDatabase {
         updatedAt: Value(DateTime.now()),
       ),
     );
-    await _recordSync('profile', profile.id, 'upsert');
+    if (recordSyncOperation) {
+      await _recordSync('profile', profile.id, 'upsert');
+    }
   }
 
   Future<int> addPet({
@@ -499,9 +576,10 @@ final class AppDatabase extends _$AppDatabase {
         photoData: Value(photoData),
         weight: Value(weight),
         allergies: Value(allergies),
+        syncId: Value(_newSyncId()),
       ),
     );
-    await _recordSync('pet', id, 'create');
+    await _recordPetSync(id, 'create');
     return id;
   }
 
@@ -543,9 +621,10 @@ final class AppDatabase extends _$AppDatabase {
         appliedAt: appliedAt,
         nextDoseAt: Value(nextDoseAt),
         clinicName: Value(clinicName),
+        syncId: Value(_newSyncId()),
       ),
     );
-    await _recordSync('vaccine', id, 'create');
+    await _recordVaccineSync(id, 'create');
     return id;
   }
 
@@ -561,9 +640,10 @@ final class AppDatabase extends _$AppDatabase {
         weight: weight,
         measuredAt: measuredAt,
         note: Value(note),
+        syncId: Value(_newSyncId()),
       ),
     );
-    await _recordSync('weight', id, 'create');
+    await _recordWeightSync(id, 'create');
     return id;
   }
 
@@ -609,9 +689,10 @@ final class AppDatabase extends _$AppDatabase {
         startAt: startAt,
         endAt: Value(endAt),
         notes: Value(notes),
+        syncId: Value(_newSyncId()),
       ),
     );
-    await _recordSync('medication', id, 'create');
+    await _recordMedicationSync(id, 'create');
     return id;
   }
 
@@ -619,7 +700,7 @@ final class AppDatabase extends _$AppDatabase {
     await (update(medicationPlans)..where((row) => row.id.equals(id))).write(
       MedicationPlansCompanion(lastTakenAt: Value(DateTime.now())),
     );
-    await _recordSync('medication', id, 'taken');
+    await _recordMedicationSync(id, 'update');
   }
 
   Future<int> addFamilyInvitation({
@@ -747,14 +828,14 @@ final class AppDatabase extends _$AppDatabase {
     await (update(pets)..where((row) => row.id.equals(id))).write(
       PetsCompanion(name: Value(name)),
     );
-    await _recordSync('pet', id, 'update');
+    await _recordPetSync(id, 'update');
   }
 
   Future<void> updateReminderPetName(int petId, String petName) async {
     await (update(reminders)..where((row) => row.petId.equals(petId))).write(
       RemindersCompanion(petName: Value(petName)),
     );
-    await _recordSync('pet', petId, 'update');
+    await _recordPetSync(petId, 'update');
   }
 
   Future<void> deleteReminder(int id) async {
@@ -763,12 +844,82 @@ final class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> deleteVaccine(int id) async {
+    final vaccine = await (select(
+      vaccines,
+    )..where((row) => row.id.equals(id))).getSingle();
     await (delete(vaccines)..where((row) => row.id.equals(id))).go();
-    await _recordSync('vaccine', id, 'delete');
+    await _recordEntityTombstone(
+      entityType: 'vaccine',
+      entityId: id,
+      syncId: vaccine.syncId,
+      baseVersion: vaccine.syncVersion,
+    );
+  }
+
+  Future<void> deleteWeight(int id) async {
+    final entry = await (select(
+      weightEntries,
+    )..where((row) => row.id.equals(id))).getSingle();
+    await (delete(weightEntries)..where((row) => row.id.equals(id))).go();
+    await _recordEntityTombstone(
+      entityType: 'weight',
+      entityId: id,
+      syncId: entry.syncId,
+      baseVersion: entry.syncVersion,
+    );
+  }
+
+  Future<void> deleteMedicationPlan(int id) async {
+    final medication = await (select(
+      medicationPlans,
+    )..where((row) => row.id.equals(id))).getSingle();
+    await (delete(medicationPlans)..where((row) => row.id.equals(id))).go();
+    await _recordEntityTombstone(
+      entityType: 'medication',
+      entityId: id,
+      syncId: medication.syncId,
+      baseVersion: medication.syncVersion,
+    );
   }
 
   Future<void> deletePet(int id) async {
+    final pet = await (select(
+      pets,
+    )..where((row) => row.id.equals(id))).getSingle();
+    final petVaccines = await (select(
+      vaccines,
+    )..where((row) => row.petId.equals(id))).get();
+    final petWeights = await (select(
+      weightEntries,
+    )..where((row) => row.petId.equals(id))).get();
+    final petMedications = await (select(
+      medicationPlans,
+    )..where((row) => row.petId.equals(id))).get();
     await transaction(() async {
+      for (final vaccine in petVaccines) {
+        await _recordEntityTombstone(
+          entityType: 'vaccine',
+          entityId: vaccine.id,
+          syncId: vaccine.syncId,
+          baseVersion: vaccine.syncVersion,
+        );
+      }
+      for (final entry in petWeights) {
+        await _recordEntityTombstone(
+          entityType: 'weight',
+          entityId: entry.id,
+          syncId: entry.syncId,
+          baseVersion: entry.syncVersion,
+        );
+      }
+      for (final medication in petMedications) {
+        await _recordEntityTombstone(
+          entityType: 'medication',
+          entityId: medication.id,
+          syncId: medication.syncId,
+          baseVersion: medication.syncVersion,
+        );
+      }
       await (delete(reminders)..where((row) => row.petId.equals(id))).go();
       await (delete(vaccines)..where((row) => row.petId.equals(id))).go();
       await (delete(
@@ -784,7 +935,16 @@ final class AppDatabase extends _$AppDatabase {
       await (delete(weightEntries)..where((row) => row.petId.equals(id))).go();
       await (delete(pets)..where((row) => row.id.equals(id))).go();
     });
-    await _recordSync('pet', id, 'delete');
+    await _recordSync(
+      'pet',
+      id,
+      'delete',
+      payload: {
+        'syncId': pet.syncId,
+        'baseVersion': pet.syncVersion,
+        'deleted': true,
+      },
+    );
   }
 
   Future<void> completeReminder(int id, DateTime nextDueAt) async {
@@ -797,7 +957,9 @@ final class AppDatabase extends _$AppDatabase {
     await _recordSync('reminder', id, 'complete');
   }
 
-  Future<Map<String, dynamic>> exportSnapshot() async {
+  Future<Map<String, dynamic>> exportSnapshot({
+    bool includeGranularClinicalEntities = true,
+  }) async {
     final profile = await loadProfile();
     final databasePets = await loadPets();
     final databaseReminders = await loadReminders();
@@ -848,6 +1010,8 @@ final class AppDatabase extends _$AppDatabase {
               'documentNotes': pet.documentNotes,
               'photoData': pet.photoData,
               'createdAt': pet.createdAt.toIso8601String(),
+              'syncId': pet.syncId,
+              'syncVersion': pet.syncVersion,
             },
           )
           .toList(),
@@ -867,20 +1031,23 @@ final class AppDatabase extends _$AppDatabase {
             },
           )
           .toList(),
-      'vaccines': databaseVaccines
-          .map(
-            (vaccine) => {
-              'id': vaccine.id,
-              'petId': vaccine.petId,
-              'name': vaccine.name,
-              'appliedAt': vaccine.appliedAt.toIso8601String(),
-              'nextDoseAt': vaccine.nextDoseAt?.toIso8601String(),
-              'clinicName': vaccine.clinicName,
-              'batchNumber': vaccine.batchNumber,
-              'createdAt': vaccine.createdAt.toIso8601String(),
-            },
-          )
-          .toList(),
+      if (includeGranularClinicalEntities)
+        'vaccines': databaseVaccines
+            .map(
+              (vaccine) => {
+                'id': vaccine.id,
+                'petId': vaccine.petId,
+                'name': vaccine.name,
+                'appliedAt': vaccine.appliedAt.toIso8601String(),
+                'nextDoseAt': vaccine.nextDoseAt?.toIso8601String(),
+                'clinicName': vaccine.clinicName,
+                'batchNumber': vaccine.batchNumber,
+                'createdAt': vaccine.createdAt.toIso8601String(),
+                'syncId': vaccine.syncId,
+                'syncVersion': vaccine.syncVersion,
+              },
+            )
+            .toList(),
       'preventives': databasePreventives
           .map(
             (record) => {
@@ -896,23 +1063,26 @@ final class AppDatabase extends _$AppDatabase {
             },
           )
           .toList(),
-      'medications': databaseMedications
-          .map(
-            (medication) => {
-              'id': medication.id,
-              'petId': medication.petId,
-              'name': medication.name,
-              'dosage': medication.dosage,
-              'schedule': medication.schedule,
-              'startAt': medication.startAt.toIso8601String(),
-              'endAt': medication.endAt?.toIso8601String(),
-              'active': medication.active,
-              'lastTakenAt': medication.lastTakenAt?.toIso8601String(),
-              'notes': medication.notes,
-              'createdAt': medication.createdAt.toIso8601String(),
-            },
-          )
-          .toList(),
+      if (includeGranularClinicalEntities)
+        'medications': databaseMedications
+            .map(
+              (medication) => {
+                'id': medication.id,
+                'petId': medication.petId,
+                'name': medication.name,
+                'dosage': medication.dosage,
+                'schedule': medication.schedule,
+                'startAt': medication.startAt.toIso8601String(),
+                'endAt': medication.endAt?.toIso8601String(),
+                'active': medication.active,
+                'lastTakenAt': medication.lastTakenAt?.toIso8601String(),
+                'notes': medication.notes,
+                'createdAt': medication.createdAt.toIso8601String(),
+                'syncId': medication.syncId,
+                'syncVersion': medication.syncVersion,
+              },
+            )
+            .toList(),
       'familyInvitations': databaseInvitations
           .map(
             (invitation) => {
@@ -961,28 +1131,34 @@ final class AppDatabase extends _$AppDatabase {
             },
           )
           .toList(),
-      'weights': databaseWeights
-          .map(
-            (weight) => {
-              'id': weight.id,
-              'petId': weight.petId,
-              'weight': weight.weight,
-              'measuredAt': weight.measuredAt.toIso8601String(),
-              'note': weight.note,
-              'createdAt': weight.createdAt.toIso8601String(),
-            },
-          )
-          .toList(),
+      if (includeGranularClinicalEntities)
+        'weights': databaseWeights
+            .map(
+              (weight) => {
+                'id': weight.id,
+                'petId': weight.petId,
+                'weight': weight.weight,
+                'measuredAt': weight.measuredAt.toIso8601String(),
+                'note': weight.note,
+                'createdAt': weight.createdAt.toIso8601String(),
+                'syncId': weight.syncId,
+                'syncVersion': weight.syncVersion,
+              },
+            )
+            .toList(),
     };
   }
 
-  Future<void> restoreSnapshot(Map<String, dynamic> snapshot) async {
+  Future<void> restoreSnapshot(
+    Map<String, dynamic> snapshot, {
+    bool recordSyncOperation = true,
+  }) async {
     if (snapshot['format'] != 'aumiau-backup' || snapshot['version'] != 1) {
       throw const FormatException('Arquivo de backup incompatível.');
     }
     final petsData = _mapList(snapshot['pets']);
     final remindersData = _mapList(snapshot['reminders']);
-    final vaccinesData = _mapList(snapshot['vaccines']);
+    final vaccinesData = _optionalMapList(snapshot['vaccines']);
     final preventivesData = _optionalMapList(snapshot['preventives']);
     final medicationsData = _optionalMapList(snapshot['medications']);
     final invitationsData = _optionalMapList(snapshot['familyInvitations']);
@@ -990,7 +1166,7 @@ final class AppDatabase extends _$AppDatabase {
     final veterinaryContactsData = _optionalMapList(
       snapshot['veterinaryContacts'],
     );
-    final weightsData = _mapList(snapshot['weights']);
+    final weightsData = _optionalMapList(snapshot['weights']);
     final profileData = snapshot['profile'] is Map
         ? Map<String, dynamic>.from(snapshot['profile'] as Map)
         : null;
@@ -1055,6 +1231,8 @@ final class AppDatabase extends _$AppDatabase {
                   documentNotes: Value(_string(pet['documentNotes'])),
                   photoData: Value(_nullableString(pet['photoData'])),
                   createdAt: Value(_date(pet['createdAt'])),
+                  syncId: Value(_string(pet['syncId'], fallback: _newSyncId())),
+                  syncVersion: Value(_int(pet['syncVersion'])),
                 ),
               )
               .toList(),
@@ -1095,6 +1273,10 @@ final class AppDatabase extends _$AppDatabase {
                   clinicName: Value(_nullableString(vaccine['clinicName'])),
                   batchNumber: Value(_nullableString(vaccine['batchNumber'])),
                   createdAt: Value(_date(vaccine['createdAt'])),
+                  syncId: Value(
+                    _string(vaccine['syncId'], fallback: _newSyncId()),
+                  ),
+                  syncVersion: Value(_int(vaccine['syncVersion'])),
                 ),
               )
               .toList(),
@@ -1158,6 +1340,10 @@ final class AppDatabase extends _$AppDatabase {
                   lastTakenAt: Value(_nullableDate(medication['lastTakenAt'])),
                   notes: Value(_nullableString(medication['notes'])),
                   createdAt: Value(_date(medication['createdAt'])),
+                  syncId: Value(
+                    _string(medication['syncId'], fallback: _newSyncId()),
+                  ),
+                  syncVersion: Value(_int(medication['syncVersion'])),
                 ),
               )
               .toList(),
@@ -1213,30 +1399,426 @@ final class AppDatabase extends _$AppDatabase {
                   measuredAt: _date(weight['measuredAt']),
                   note: Value(_nullableString(weight['note'])),
                   createdAt: Value(_date(weight['createdAt'])),
+                  syncId: Value(
+                    _string(weight['syncId'], fallback: _newSyncId()),
+                  ),
+                  syncVersion: Value(_int(weight['syncVersion'])),
                 ),
               )
               .toList(),
         );
       });
-      await into(syncOperations).insert(
-        SyncOperationsCompanion.insert(
-          entityType: 'snapshot',
-          operation: 'restore',
-          payload: Value(jsonEncode({'version': snapshot['version']})),
-        ),
-      );
+      if (recordSyncOperation) {
+        await into(syncOperations).insert(
+          SyncOperationsCompanion.insert(
+            entityType: 'snapshot',
+            operation: 'restore',
+            payload: Value(jsonEncode({'version': snapshot['version']})),
+          ),
+        );
+      }
     });
   }
 
-  Future<void> _recordSync(String entityType, int entityId, String operation) {
+  Future<void> _recordPetSync(int id, String operation) async {
+    final pet = await (select(
+      pets,
+    )..where((row) => row.id.equals(id))).getSingle();
+    await _recordSync(
+      'pet',
+      id,
+      operation,
+      payload: {
+        'syncId': pet.syncId,
+        'baseVersion': pet.syncVersion,
+        'deleted': false,
+        'data': {
+          'name': pet.name,
+          'species': pet.species,
+          'breed': pet.breed,
+          'emoji': pet.emoji,
+          'weight': pet.weight,
+          'allergies': pet.allergies,
+          'birthDate': pet.birthDate?.toUtc().toIso8601String(),
+          'sex': pet.sex,
+          'color': pet.color,
+          'characteristics': pet.characteristics,
+          'hasPedigree': pet.hasPedigree,
+          'pedigreeNumber': pet.pedigreeNumber,
+          'microchip': pet.microchip,
+          'size': pet.size,
+          'reproductiveStatus': pet.reproductiveStatus,
+          'bodyConditionScore': pet.bodyConditionScore,
+          'clinicReference': pet.clinicReference,
+          'veterinarianReference': pet.veterinarianReference,
+          'documentNotes': pet.documentNotes,
+          'photoData': pet.photoData,
+          'createdAt': pet.createdAt.toUtc().toIso8601String(),
+        },
+      },
+    );
+  }
+
+  Future<void> _recordVaccineSync(int id, String operation) async {
+    final vaccine = await (select(
+      vaccines,
+    )..where((row) => row.id.equals(id))).getSingle();
+    final pet = await (select(
+      pets,
+    )..where((row) => row.id.equals(vaccine.petId))).getSingle();
+    await _recordSync(
+      'vaccine',
+      id,
+      operation,
+      payload: {
+        'syncId': vaccine.syncId,
+        'baseVersion': vaccine.syncVersion,
+        'deleted': false,
+        'data': {
+          'petSyncId': pet.syncId,
+          'name': vaccine.name,
+          'appliedAt': vaccine.appliedAt.toUtc().toIso8601String(),
+          'nextDoseAt': vaccine.nextDoseAt?.toUtc().toIso8601String(),
+          'clinicName': vaccine.clinicName,
+          'batchNumber': vaccine.batchNumber,
+          'createdAt': vaccine.createdAt.toUtc().toIso8601String(),
+        },
+      },
+    );
+  }
+
+  Future<void> _recordWeightSync(int id, String operation) async {
+    final entry = await (select(
+      weightEntries,
+    )..where((row) => row.id.equals(id))).getSingle();
+    final pet = await (select(
+      pets,
+    )..where((row) => row.id.equals(entry.petId))).getSingle();
+    await _recordSync(
+      'weight',
+      id,
+      operation,
+      payload: {
+        'syncId': entry.syncId,
+        'baseVersion': entry.syncVersion,
+        'deleted': false,
+        'data': {
+          'petSyncId': pet.syncId,
+          'weight': entry.weight,
+          'measuredAt': entry.measuredAt.toUtc().toIso8601String(),
+          'note': entry.note,
+          'createdAt': entry.createdAt.toUtc().toIso8601String(),
+        },
+      },
+    );
+  }
+
+  Future<void> _recordMedicationSync(int id, String operation) async {
+    final medication = await (select(
+      medicationPlans,
+    )..where((row) => row.id.equals(id))).getSingle();
+    final pet = await (select(
+      pets,
+    )..where((row) => row.id.equals(medication.petId))).getSingle();
+    await _recordSync(
+      'medication',
+      id,
+      operation,
+      payload: {
+        'syncId': medication.syncId,
+        'baseVersion': medication.syncVersion,
+        'deleted': false,
+        'data': {
+          'petSyncId': pet.syncId,
+          'name': medication.name,
+          'dosage': medication.dosage,
+          'schedule': medication.schedule,
+          'startAt': medication.startAt.toUtc().toIso8601String(),
+          'endAt': medication.endAt?.toUtc().toIso8601String(),
+          'active': medication.active,
+          'lastTakenAt': medication.lastTakenAt?.toUtc().toIso8601String(),
+          'notes': medication.notes,
+          'createdAt': medication.createdAt.toUtc().toIso8601String(),
+        },
+      },
+    );
+  }
+
+  Future<void> _recordEntityTombstone({
+    required String entityType,
+    required int entityId,
+    required String syncId,
+    required int baseVersion,
+  }) => _recordSync(
+    entityType,
+    entityId,
+    'delete',
+    payload: {'syncId': syncId, 'baseVersion': baseVersion, 'deleted': true},
+  );
+
+  Future<List<SyncOperation>> loadPendingPetSyncOperations() =>
+      (select(syncOperations)
+            ..where(
+              (row) => row.syncedAt.isNull() & row.entityType.equals('pet'),
+            )
+            ..orderBy([(row) => OrderingTerm.asc(row.occurredAt)]))
+          .get();
+
+  Future<void> applyPetSyncVersion(String syncId, int version) async {
+    await (update(pets)..where((row) => row.syncId.equals(syncId))).write(
+      PetsCompanion(syncVersion: Value(version)),
+    );
+  }
+
+  Future<void> applyRemotePets(List<Map<String, dynamic>> entities) async {
+    await transaction(() async {
+      for (final entity in entities) {
+        final syncId = _string(entity['entityId']);
+        final version = _int(entity['version']);
+        final existing = await (select(
+          pets,
+        )..where((row) => row.syncId.equals(syncId))).getSingleOrNull();
+        if (entity['deleted'] == true) {
+          if (existing != null && existing.syncVersion < version) {
+            await (delete(
+              reminders,
+            )..where((row) => row.petId.equals(existing.id))).go();
+            await (delete(
+              vaccines,
+            )..where((row) => row.petId.equals(existing.id))).go();
+            await (delete(
+              preventiveRecords,
+            )..where((row) => row.petId.equals(existing.id))).go();
+            await (delete(
+              medicationPlans,
+            )..where((row) => row.petId.equals(existing.id))).go();
+            await (delete(
+              familyInvitations,
+            )..where((row) => row.petId.equals(existing.id))).go();
+            await (delete(
+              appointments,
+            )..where((row) => row.petId.equals(existing.id))).go();
+            await (delete(
+              weightEntries,
+            )..where((row) => row.petId.equals(existing.id))).go();
+            await (delete(
+              pets,
+            )..where((row) => row.id.equals(existing.id))).go();
+          }
+          continue;
+        }
+        final data = entity['payload'] is Map
+            ? Map<String, dynamic>.from(entity['payload'] as Map)
+            : const <String, dynamic>{};
+        if (existing != null && existing.syncVersion >= version) continue;
+        final companion = PetsCompanion.insert(
+          id: existing == null ? const Value.absent() : Value(existing.id),
+          name: _string(data['name']),
+          species: _string(data['species']),
+          breed: _string(data['breed']),
+          emoji: Value(_string(data['emoji'], fallback: '🐾')),
+          weight: Value(_double(data['weight'])),
+          allergies: Value(_string(data['allergies'])),
+          birthDate: Value(_nullableDate(data['birthDate'])),
+          sex: Value(_string(data['sex'])),
+          color: Value(_string(data['color'])),
+          characteristics: Value(_string(data['characteristics'])),
+          hasPedigree: Value(_bool(data['hasPedigree'])),
+          pedigreeNumber: Value(_nullableString(data['pedigreeNumber'])),
+          microchip: Value(_nullableString(data['microchip'])),
+          size: Value(_string(data['size'])),
+          reproductiveStatus: Value(_string(data['reproductiveStatus'])),
+          bodyConditionScore: Value(
+            _nullableDouble(data['bodyConditionScore']),
+          ),
+          clinicReference: Value(_string(data['clinicReference'])),
+          veterinarianReference: Value(_string(data['veterinarianReference'])),
+          documentNotes: Value(_string(data['documentNotes'])),
+          photoData: Value(_nullableString(data['photoData'])),
+          createdAt: Value(_date(data['createdAt'])),
+          syncId: Value(syncId),
+          syncVersion: Value(version),
+        );
+        if (existing == null) {
+          await into(pets).insert(companion);
+        } else {
+          await into(pets).insertOnConflictUpdate(companion);
+        }
+      }
+    });
+  }
+
+  Future<List<SyncOperation>> loadPendingEntitySyncOperations(
+    String entityType,
+  ) =>
+      (select(syncOperations)
+            ..where(
+              (row) =>
+                  row.syncedAt.isNull() & row.entityType.equals(entityType),
+            )
+            ..orderBy([(row) => OrderingTerm.asc(row.occurredAt)]))
+          .get();
+
+  Future<void> applyEntitySyncVersion(
+    String entityType,
+    String syncId,
+    int version,
+  ) async {
+    switch (entityType) {
+      case 'vaccine':
+        await (update(vaccines)..where((row) => row.syncId.equals(syncId)))
+            .write(VaccinesCompanion(syncVersion: Value(version)));
+      case 'weight':
+        await (update(weightEntries)..where((row) => row.syncId.equals(syncId)))
+            .write(WeightEntriesCompanion(syncVersion: Value(version)));
+      case 'medication':
+        await (update(medicationPlans)
+              ..where((row) => row.syncId.equals(syncId)))
+            .write(MedicationPlansCompanion(syncVersion: Value(version)));
+      default:
+        throw ArgumentError.value(entityType, 'entityType');
+    }
+  }
+
+  Future<void> applyRemoteClinicalEntities(
+    String entityType,
+    List<Map<String, dynamic>> entities,
+  ) async {
+    await transaction(() async {
+      for (final entity in entities) {
+        final syncId = _string(entity['entityId']);
+        final version = _int(entity['version']);
+        final deleted = entity['deleted'] == true;
+        final data = entity['payload'] is Map
+            ? Map<String, dynamic>.from(entity['payload'] as Map)
+            : const <String, dynamic>{};
+        switch (entityType) {
+          case 'vaccine':
+            final existing = await (select(
+              vaccines,
+            )..where((row) => row.syncId.equals(syncId))).getSingleOrNull();
+            if (deleted) {
+              if (existing != null && existing.syncVersion < version) {
+                await (delete(
+                  vaccines,
+                )..where((row) => row.id.equals(existing.id))).go();
+              }
+              continue;
+            }
+            if (existing != null && existing.syncVersion >= version) continue;
+            final pet = await _petBySyncId(data['petSyncId']);
+            if (pet == null) continue;
+            final companion = VaccinesCompanion.insert(
+              id: existing == null ? const Value.absent() : Value(existing.id),
+              petId: pet.id,
+              name: _string(data['name']),
+              appliedAt: _date(data['appliedAt']),
+              nextDoseAt: Value(_nullableDate(data['nextDoseAt'])),
+              clinicName: Value(_nullableString(data['clinicName'])),
+              batchNumber: Value(_nullableString(data['batchNumber'])),
+              createdAt: Value(_date(data['createdAt'])),
+              syncId: Value(syncId),
+              syncVersion: Value(version),
+            );
+            await into(vaccines).insertOnConflictUpdate(companion);
+          case 'weight':
+            final existing = await (select(
+              weightEntries,
+            )..where((row) => row.syncId.equals(syncId))).getSingleOrNull();
+            if (deleted) {
+              if (existing != null && existing.syncVersion < version) {
+                await (delete(
+                  weightEntries,
+                )..where((row) => row.id.equals(existing.id))).go();
+              }
+              continue;
+            }
+            if (existing != null && existing.syncVersion >= version) continue;
+            final pet = await _petBySyncId(data['petSyncId']);
+            if (pet == null) continue;
+            final companion = WeightEntriesCompanion.insert(
+              id: existing == null ? const Value.absent() : Value(existing.id),
+              petId: pet.id,
+              weight: _double(data['weight']),
+              measuredAt: _date(data['measuredAt']),
+              note: Value(_nullableString(data['note'])),
+              createdAt: Value(_date(data['createdAt'])),
+              syncId: Value(syncId),
+              syncVersion: Value(version),
+            );
+            await into(weightEntries).insertOnConflictUpdate(companion);
+          case 'medication':
+            final existing = await (select(
+              medicationPlans,
+            )..where((row) => row.syncId.equals(syncId))).getSingleOrNull();
+            if (deleted) {
+              if (existing != null && existing.syncVersion < version) {
+                await (delete(
+                  medicationPlans,
+                )..where((row) => row.id.equals(existing.id))).go();
+              }
+              continue;
+            }
+            if (existing != null && existing.syncVersion >= version) continue;
+            final pet = await _petBySyncId(data['petSyncId']);
+            if (pet == null) continue;
+            final companion = MedicationPlansCompanion.insert(
+              id: existing == null ? const Value.absent() : Value(existing.id),
+              petId: pet.id,
+              name: _string(data['name']),
+              dosage: _string(data['dosage']),
+              schedule: _string(data['schedule']),
+              startAt: _date(data['startAt']),
+              endAt: Value(_nullableDate(data['endAt'])),
+              active: Value(data['active'] != false),
+              lastTakenAt: Value(_nullableDate(data['lastTakenAt'])),
+              notes: Value(_nullableString(data['notes'])),
+              createdAt: Value(_date(data['createdAt'])),
+              syncId: Value(syncId),
+              syncVersion: Value(version),
+            );
+            await into(medicationPlans).insertOnConflictUpdate(companion);
+          default:
+            throw ArgumentError.value(entityType, 'entityType');
+        }
+      }
+    });
+  }
+
+  Future<Pet?> _petBySyncId(Object? value) {
+    final syncId = _string(value);
+    return (select(
+      pets,
+    )..where((row) => row.syncId.equals(syncId))).getSingleOrNull();
+  }
+
+  Future<void> _recordSync(
+    String entityType,
+    int entityId,
+    String operation, {
+    Map<String, dynamic>? payload,
+  }) {
     return into(syncOperations).insert(
       SyncOperationsCompanion.insert(
         entityType: entityType,
         entityId: Value(entityId),
         operation: operation,
+        payload: Value(payload == null ? '' : jsonEncode(payload)),
       ),
     );
   }
+}
+
+String _newSyncId() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = bytes
+      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+      .join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
+      '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }
 
 List<Map<String, dynamic>> _mapList(Object? value) {

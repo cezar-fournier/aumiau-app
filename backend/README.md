@@ -13,6 +13,8 @@ do banco local do celular.
 - `POST /admin/partners` e `PATCH /admin/partners/{id}/status`: cadastro e moderação administrativa.
 - `GET/POST /appointments`: consulta e solicita atendimentos Family.
 - `PATCH /appointments/{id}/status`: confirma, cancela, faz check-in ou conclui um atendimento.
+- `GET /partner/appointments`: lista a agenda pertencente ao parceiro autenticado.
+- `PATCH /partner/appointments/{id}/status`: confirma, cancela ou conclui como parceiro.
 
 Os endpoints de família e atendimento exigem entitlement `family_access` ativo.
 A localização só é filtrada quando o usuário fornece latitude e longitude; o backend não coleta localização continuamente.
@@ -61,6 +63,27 @@ anteriores são revogadas.
   de requisições.
 
 O arquivo `.env` contém credenciais e não deve ser versionado.
+
+## Migrações e recuperação
+
+Alterações novas do PostgreSQL devem ser adicionadas como arquivos SQL imutáveis
+em `migrations/`. A API registra versão e SHA-256 em `schema_migrations` e recusa
+uma migração já aplicada que tenha sido modificada.
+
+Para gerar um backup local com checksum e retenção padrão de 14 dias:
+
+```powershell
+.\scripts\backup_postgres.ps1
+```
+
+Para comprovar a restauração em um banco temporário isolado:
+
+```powershell
+.\scripts\verify_restore.ps1 -DumpPath .\backups\aumiau-AAAAmmdd-HHMMSS.dump
+```
+
+O teste de restauração remove apenas o banco temporário criado por ele e não
+altera o banco `aumiau` em uso.
 
 ## Mercado Pago e Pix Family
 

@@ -1,4 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import '../data/account_scope.dart';
 
 class StoredSession {
   const StoredSession({
@@ -59,5 +63,30 @@ class SessionStore {
     await _storage.delete(key: _emailKey);
     await _storage.delete(key: _tokenKey);
     await _storage.delete(key: _refreshKey);
+  }
+
+  Future<void> savePartnerDraft(
+    String email,
+    Map<String, dynamic> draft,
+  ) async {
+    await _storage.write(
+      key: accountPartnerDraftKey(email),
+      value: jsonEncode(draft),
+    );
+  }
+
+  Future<Map<String, dynamic>?> readPartnerDraft(String email) async {
+    final raw = await _storage.read(key: accountPartnerDraftKey(email));
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map ? Map<String, dynamic>.from(decoded) : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  Future<void> clearPartnerDraft(String email) async {
+    await _storage.delete(key: accountPartnerDraftKey(email));
   }
 }

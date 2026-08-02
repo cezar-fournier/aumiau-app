@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import hashlib
 import hmac
@@ -20,10 +21,33 @@ import bcrypt
 import jwt
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.admin_panel import ADMIN_HTML
+from app.appointment_security import (
+    InvalidAppointmentTransition,
+    validate_appointment_transition,
+)
+from app.document_security import (
+    InvalidDocument,
+    detect_document_mime,
+    resolve_storage_path,
+    safe_document_name,
+    validate_document,
+    validate_document_type,
+)
+from app.mfa import (
+    decrypt_secret,
+    encrypt_secret,
+    generate_recovery_codes,
+    generate_totp_secret,
+    hash_recovery_code,
+    provisioning_uri,
+    verify_totp,
+)
+from app.migrations import apply_migrations
+from app.security import InMemoryRateLimiter, rate_limit_for
 
 
 DATABASE_URL = os.environ["DATABASE_URL"]
@@ -52,6 +76,7 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME", "").strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME).strip()
 AUMIAU_WEB_URL = os.getenv("AUMIAU_WEB_URL", "https://aumiau.app.br").rstrip("/")
+PARTNER_DOCUMENTS_DIR = os.getenv("PARTNER_DOCUMENTS_DIR", "/data/partner-documents")
 logger = logging.getLogger("aumiau.api")
 STARTED_AT = time.monotonic()
 
@@ -59,6 +84,15 @@ STARTED_AT = time.monotonic()
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=180)
     password: str = Field(min_length=8, max_length=128)
+
+
+class MfaChallengeRequest(BaseModel):
+    challengeToken: str = Field(min_length=20, max_length=2048)
+    code: str = Field(min_length=6, max_length=32)
+
+
+class MfaCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=32)
 
 
 class RegisterRequest(BaseModel):
@@ -166,8 +200,31 @@ class PartnerProfileUpdateRequest(BaseModel):
     acceptsUrgency: bool = False
 
 
+class PartnerProfileRequest(PartnerProfileUpdateRequest):
+    termsAccepted: bool
+
+
+class PartnerDocumentRequest(BaseModel):
+    documentType: str = Field(min_length=2, max_length=60)
+    fileName: str = Field(min_length=1, max_length=180)
+    mimeType: str = Field(default="application/octet-stream", max_length=120)
+    contentBase64: str = Field(min_length=8, max_length=12_000_000)
+
+
+class PartnerDocumentReviewRequest(BaseModel):
+    status: str = Field(min_length=7, max_length=20)
+    rejectionReason: str = Field(default="", max_length=500)
+
+
 class PartnerStatusRequest(BaseModel):
     status: str = Field(min_length=6, max_length=20)
+
+
+REQUIRED_PARTNER_DOCUMENTS = {
+    "documento_responsavel": "Documento de identidade do responsável",
+    "documento_fiscal": "CPF/CNPJ ou comprovante fiscal",
+    "registro_crmv": "Registro profissional no CRMV",
+}
 
 
 class PrivateVeterinaryContactRequest(BaseModel):
@@ -253,11 +310,27 @@ class Operation(BaseModel):
 class SyncBatch(BaseModel):
     contractVersion: str = Field(min_length=1, max_length=20)
     generatedAt: datetime
+    baseRevision: int = Field(default=0, ge=0)
     snapshot: dict[str, Any]
     operations: list[Operation] = Field(max_length=1000)
 
 
+class EntityChange(BaseModel):
+    operationId: int
+    entityType: str = Field(pattern="^(pet|vaccine|weight|medication)$")
+    entityId: str = Field(min_length=16, max_length=64)
+    baseVersion: int = Field(default=0, ge=0)
+    deleted: bool = False
+    payload: dict[str, Any] | None = None
+    changedAt: datetime
+
+
+class EntityBatch(BaseModel):
+    changes: list[EntityChange] = Field(min_length=1, max_length=500)
+
+
 app = FastAPI(title="AuMiau API", version="1.0.0")
+rate_limiter = InMemoryRateLimiter()
 
 BILLING_PRODUCTS: dict[str, dict[str, Any]] = {
     "family_monthly": {
@@ -381,6 +454,21 @@ def normalize_cnpj(value: str, *, required: bool = True) -> str:
 @app.middleware("http")
 async def request_logging(request, call_next):
     started = time.perf_counter()
+    policy = rate_limit_for(request.url.path)
+    if policy is not None:
+        limit, window_seconds = policy
+        client_host = request.client.host if request.client else "unknown"
+        decision = rate_limiter.check(
+            f"{request.url.path}:{client_host}",
+            limit=limit,
+            window_seconds=window_seconds,
+        )
+        if not decision.allowed:
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Muitas tentativas. Aguarde e tente novamente."},
+                headers={"Retry-After": str(decision.retry_after_seconds)},
+            )
     response = await call_next(request)
     elapsed_ms = (time.perf_counter() - started) * 1000
     logger.info(
@@ -390,6 +478,12 @@ async def request_logging(request, call_next):
         response.status_code,
         elapsed_ms,
     )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(self), camera=(), microphone=()"
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -494,6 +588,32 @@ def issue_token(user_id: int, email: str, session_jti: str) -> str:
         "exp": now + timedelta(hours=TOKEN_TTL_HOURS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def issue_mfa_challenge(user_id: int) -> str:
+    now = utc_now()
+    challenge_jti = secrets.token_hex(24)
+    expires_at = now + timedelta(minutes=5)
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO admin_mfa_challenges (jti, user_id, expires_at)
+                VALUES (%s, %s, %s)
+                """,
+                (challenge_jti, user_id, expires_at),
+            )
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "jti": challenge_jti,
+            "type": "admin_mfa_challenge",
+            "iat": now,
+            "exp": expires_at,
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
 
 
 def hash_refresh_token(refresh_token: str) -> str:
@@ -644,7 +764,7 @@ def send_family_invitation_email(
         smtp.send_message(message)
 
 
-def create_auth_session(user_id: int, email: str) -> dict[str, str]:
+def create_auth_session(user_id: int, email: str, *, mfa_verified: bool = False) -> dict[str, Any]:
     now = utc_now()
     access_expires_at = now + timedelta(hours=TOKEN_TTL_HOURS)
     refresh_expires_at = now + timedelta(days=REFRESH_TTL_DAYS)
@@ -655,10 +775,10 @@ def create_auth_session(user_id: int, email: str) -> dict[str, str]:
             cursor.execute(
                 """
                 INSERT INTO auth_sessions
-                    (jti, user_id, refresh_token_hash, refresh_expires_at)
-                VALUES (%s, %s, %s, %s)
+                    (jti, user_id, refresh_token_hash, refresh_expires_at, mfa_verified)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (session_jti, user_id, hash_refresh_token(refresh_token), refresh_expires_at),
+                (session_jti, user_id, hash_refresh_token(refresh_token), refresh_expires_at, mfa_verified),
             )
     return {
         "accessToken": issue_token(user_id, email, session_jti),
@@ -735,16 +855,32 @@ def require_family(user: dict[str, Any] = Depends(current_user)) -> dict[str, An
     return user
 
 
-def current_admin(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+def current_admin_account(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT is_admin, is_active FROM users WHERE id = %s",
+                "SELECT is_admin, is_active, mfa_enabled FROM users WHERE id = %s",
                 (int(user["sub"]),),
             )
             account = cursor.fetchone()
     if account is None or not account[0] or not account[1]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Acesso administrativo necessário.")
+    return {**user, "mfa_enabled": bool(account[2])}
+
+
+def current_admin(user: dict[str, Any] = Depends(current_admin_account)) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT mfa_verified FROM auth_sessions WHERE jti = %s AND user_id = %s",
+                (str(user["jti"]), int(user["sub"])),
+            )
+            session = cursor.fetchone()
+    if not user["mfa_enabled"] or session is None or not session[0]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Ative e valide o MFA para acessar recursos administrativos.",
+        )
     return user
 
 
@@ -1080,6 +1216,21 @@ def initialize_database() -> None:
         )
         """,
         "CREATE INDEX IF NOT EXISTS partner_documents_partner_idx ON partner_documents (partner_id, verification_status)",
+        "ALTER TABLE partner_documents ADD COLUMN IF NOT EXISTS file_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE partner_documents ADD COLUMN IF NOT EXISTS mime_type TEXT NOT NULL DEFAULT 'application/octet-stream'",
+        """
+        CREATE TABLE IF NOT EXISTS partner_document_audits (
+            id BIGSERIAL PRIMARY KEY,
+            document_id BIGINT NOT NULL REFERENCES partner_documents(id) ON DELETE CASCADE,
+            partner_id BIGINT NOT NULL REFERENCES partner_profiles(id) ON DELETE CASCADE,
+            admin_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            previous_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            rejection_reason TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS partner_document_audits_document_idx ON partner_document_audits (document_id, created_at DESC)",
         """
         CREATE TABLE IF NOT EXISTS private_veterinary_contacts (
             id BIGSERIAL PRIMARY KEY,
@@ -1123,6 +1274,9 @@ def initialize_database() -> None:
         with connection.cursor() as cursor:
             for statement in statements:
                 cursor.execute(statement)
+            applied_migrations = apply_migrations(cursor)
+            if applied_migrations:
+                logger.info("database_migrations_applied versions=%s", ",".join(applied_migrations))
             cursor.execute(
                 """
                 INSERT INTO entitlements (user_id, entitlement_key, source, status)
@@ -1133,6 +1287,7 @@ def initialize_database() -> None:
                 """
             )
             cursor.execute("DELETE FROM auth_sessions WHERE refresh_expires_at <= now()")
+            cursor.execute("DELETE FROM admin_mfa_challenges WHERE expires_at <= now() OR used_at IS NOT NULL")
             cursor.execute("DELETE FROM password_reset_tokens WHERE expires_at <= now() OR used_at IS NOT NULL")
             cursor.execute("DELETE FROM email_verification_tokens WHERE expires_at <= now() OR used_at IS NOT NULL")
 
@@ -1151,8 +1306,6 @@ def initialize_bootstrap_user() -> None:
                     "INSERT INTO users (email, password_hash, is_admin) VALUES (%s, %s, TRUE)",
                     (email, hash_password(password)),
                 )
-            else:
-                cursor.execute("UPDATE users SET is_admin = TRUE, is_active = TRUE WHERE id = %s", (user[0],))
 
 
 def initialize_with_retry() -> None:
@@ -1237,12 +1390,16 @@ def admin_panel() -> str:
 
 
 @app.post("/auth/login")
-def login(request: LoginRequest) -> dict[str, str]:
+def login(request: LoginRequest) -> dict[str, Any]:
     email = request.email.strip().lower()
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, email, password_hash, is_active, email_verified FROM users WHERE email = %s",
+                """
+                SELECT id, email, password_hash, is_active, email_verified, is_admin, mfa_enabled
+                FROM users
+                WHERE email = %s
+                """,
                 (email,),
             )
             user = cursor.fetchone()
@@ -1256,7 +1413,126 @@ def login(request: LoginRequest) -> dict[str, str]:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Confirme o seu e-mail antes de entrar.",
         )
-    return create_auth_session(user[0], user[1])
+    if user[5] and user[6]:
+        return {
+            "mfaRequired": True,
+            "challengeToken": issue_mfa_challenge(user[0]),
+            "expiresInSeconds": 300,
+        }
+    session = create_auth_session(user[0], user[1])
+    if user[5]:
+        session["mfaSetupRequired"] = True
+    return session
+
+
+@app.post("/auth/mfa/verify")
+def verify_mfa_challenge(request: MfaChallengeRequest) -> dict[str, str]:
+    try:
+        claims = jwt.decode(request.challengeToken, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError as error:
+        raise HTTPException(status_code=401, detail="Desafio MFA inválido ou expirado.") from error
+    if claims.get("type") != "admin_mfa_challenge":
+        raise HTTPException(status_code=401, detail="Desafio MFA inválido ou expirado.")
+    user_id = int(claims["sub"])
+    challenge_jti = str(claims["jti"])
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT challenges.used_at, challenges.expires_at,
+                       users.email, users.mfa_secret_encrypted, users.mfa_enabled
+                FROM admin_mfa_challenges AS challenges
+                JOIN users ON users.id = challenges.user_id
+                WHERE challenges.jti = %s AND challenges.user_id = %s
+                FOR UPDATE
+                """,
+                (challenge_jti, user_id),
+            )
+            challenge = cursor.fetchone()
+            if challenge is None or challenge[0] is not None or challenge[1] <= utc_now() or not challenge[4]:
+                raise HTTPException(status_code=401, detail="Desafio MFA inválido ou expirado.")
+            secret = decrypt_secret(challenge[3], JWT_SECRET)
+            valid = verify_totp(secret, request.code)
+            if not valid:
+                recovery_hash = hash_recovery_code(request.code, JWT_SECRET)
+                cursor.execute(
+                    """
+                    UPDATE admin_mfa_recovery_codes
+                    SET used_at = now()
+                    WHERE user_id = %s AND code_hash = %s AND used_at IS NULL
+                    RETURNING id
+                    """,
+                    (user_id, recovery_hash),
+                )
+                valid = cursor.fetchone() is not None
+            if not valid:
+                raise HTTPException(status_code=401, detail="Código MFA inválido.")
+            cursor.execute(
+                "UPDATE admin_mfa_challenges SET used_at = now() WHERE jti = %s",
+                (challenge_jti,),
+            )
+    return create_auth_session(user_id, challenge[2], mfa_verified=True)
+
+
+@app.post("/admin/mfa/setup")
+def setup_admin_mfa(admin: dict[str, Any] = Depends(current_admin_account)) -> dict[str, str]:
+    if admin["mfa_enabled"]:
+        raise HTTPException(status_code=409, detail="O MFA administrativo já está ativo.")
+    secret = generate_totp_secret()
+    encrypted = encrypt_secret(secret, JWT_SECRET)
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET mfa_pending_secret_encrypted = %s WHERE id = %s",
+                (encrypted, int(admin["sub"])),
+            )
+    return {
+        "secret": secret,
+        "provisioningUri": provisioning_uri(secret, str(admin["email"])),
+    }
+
+
+@app.post("/admin/mfa/activate")
+def activate_admin_mfa(
+    request: MfaCodeRequest,
+    admin: dict[str, Any] = Depends(current_admin_account),
+) -> dict[str, Any]:
+    if admin["mfa_enabled"]:
+        raise HTTPException(status_code=409, detail="O MFA administrativo já está ativo.")
+    user_id = int(admin["sub"])
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT mfa_pending_secret_encrypted FROM users WHERE id = %s FOR UPDATE",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if row is None or not row[0]:
+                raise HTTPException(status_code=409, detail="Inicie a configuração do MFA novamente.")
+            secret = decrypt_secret(row[0], JWT_SECRET)
+            if not verify_totp(secret, request.code):
+                raise HTTPException(status_code=400, detail="Código MFA inválido.")
+            recovery_codes = generate_recovery_codes()
+            cursor.execute(
+                """
+                UPDATE users
+                SET mfa_enabled = TRUE,
+                    mfa_secret_encrypted = mfa_pending_secret_encrypted,
+                    mfa_pending_secret_encrypted = NULL
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+            cursor.execute("DELETE FROM admin_mfa_recovery_codes WHERE user_id = %s", (user_id,))
+            cursor.executemany(
+                "INSERT INTO admin_mfa_recovery_codes (user_id, code_hash) VALUES (%s, %s)",
+                [(user_id, hash_recovery_code(code, JWT_SECRET)) for code in recovery_codes],
+            )
+            cursor.execute(
+                "UPDATE auth_sessions SET mfa_verified = TRUE WHERE jti = %s AND user_id = %s",
+                (str(admin["jti"]), user_id),
+            )
+    return {"status": "enabled", "recoveryCodes": recovery_codes}
 
 
 @app.post("/auth/register")
@@ -1447,6 +1723,111 @@ def register_partner(request: PartnerRegisterRequest) -> dict[str, Any]:
     return session
 
 
+@app.post("/partner/profile/request")
+def request_partner_profile(
+    request: PartnerProfileRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    """Creates the partner profile for an already authenticated client account."""
+    if not request.termsAccepted:
+        raise HTTPException(status_code=400, detail="Aceite os Termos de Uso e a Política de Privacidade.")
+    if (request.latitude is None) != (request.longitude is None):
+        raise HTTPException(status_code=400, detail="Latitude e longitude devem ser informadas juntas.")
+    normalized_document = normalize_document(request.cnpj, document_type=request.documentType)
+    responsible_cpf = normalize_document(
+        request.responsibleCpf,
+        required=False,
+        document_type="cpf",
+    )
+    user_id = int(user["sub"])
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT email, is_active, email_verified FROM users WHERE id = %s",
+                (user_id,),
+            )
+            account = cursor.fetchone()
+            if account is None or not account[1]:
+                raise HTTPException(status_code=403, detail="Esta conta está desativada.")
+            if REQUIRE_EMAIL_VERIFICATION and not account[2]:
+                raise HTTPException(status_code=403, detail="Confirme o e-mail da conta antes de cadastrar o perfil parceiro.")
+            cursor.execute(
+                "SELECT id FROM partner_profiles WHERE owner_user_id = %s",
+                (user_id,),
+            )
+            if cursor.fetchone() is not None:
+                raise HTTPException(status_code=409, detail="O perfil parceiro desta conta já foi cadastrado.")
+            cursor.execute(
+                "SELECT id FROM partner_profiles WHERE cnpj = %s",
+                (normalized_document,),
+            )
+            if cursor.fetchone() is not None:
+                raise HTTPException(status_code=409, detail="CPF/CNPJ já cadastrado.")
+            cursor.execute(
+                "INSERT INTO user_roles (user_id, role) VALUES (%s, 'partner') ON CONFLICT DO NOTHING",
+                (user_id,),
+            )
+            cursor.execute(
+                """
+                INSERT INTO partner_profiles
+                    (owner_user_id, name, partner_type, cnpj, phone, whatsapp, email, address,
+                     postal_code, city, state, latitude, longitude, services, accepts_urgency,
+                     status, verification_status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        'pending', 'pending')
+                RETURNING id
+                """,
+                (
+                    user_id,
+                    request.businessName.strip(),
+                    request.partnerType.strip().lower(),
+                    normalized_document,
+                    request.phone.strip(),
+                    request.whatsapp.strip(),
+                    account[0],
+                    request.address.strip(),
+                    request.postalCode.strip(),
+                    request.city.strip(),
+                    request.state.strip().upper(),
+                    request.latitude,
+                    request.longitude,
+                    psycopg.types.json.Jsonb([value.strip() for value in request.services if value.strip()]),
+                    request.acceptsUrgency,
+                ),
+            )
+            partner_id = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                INSERT INTO partner_professionals
+                    (partner_id, full_name, cpf, crmv_uf, crmv_number, art_number,
+                     is_responsible_technical, verification_status)
+                VALUES (%s, %s, %s, %s, %s, %s, TRUE, 'pending')
+                """,
+                (
+                    partner_id,
+                    request.responsibleName.strip(),
+                    responsible_cpf,
+                    request.crmvUf.strip().upper(),
+                    request.crmvNumber.strip(),
+                    request.artNumber.strip(),
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO entitlements (user_id, entitlement_key, source, status)
+                VALUES (%s, 'partner_access', 'account_registration', 'pending')
+                ON CONFLICT (user_id, entitlement_key) DO NOTHING
+                """,
+                (user_id,),
+            )
+    return {
+        "partnerId": partner_id,
+        "status": "pending",
+        "verificationStatus": "pending",
+        "message": "Cadastro enviado para análise. O perfil ficará oculto até a aprovação.",
+    }
+
+
 @app.post("/auth/verify-email")
 def verify_email(request: EmailVerificationRequest) -> dict[str, Any]:
     email = request.email.strip().lower()
@@ -1533,7 +1914,7 @@ def refresh(request: RefreshRequest) -> dict[str, str]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT sessions.id, sessions.user_id, users.email
+                SELECT sessions.id, sessions.user_id, users.email, sessions.mfa_verified
                 FROM auth_sessions AS sessions
                 JOIN users ON users.id = sessions.user_id
                 WHERE sessions.refresh_token_hash = %s
@@ -1552,7 +1933,7 @@ def refresh(request: RefreshRequest) -> dict[str, str]:
                 "UPDATE auth_sessions SET revoked_at = %s WHERE id = %s",
                 (now, session[0]),
             )
-    return create_auth_session(session[1], session[2])
+    return create_auth_session(session[1], session[2], mfa_verified=bool(session[3]))
 
 
 @app.post("/auth/logout")
@@ -2030,6 +2411,294 @@ def get_partner_profile(user: dict[str, Any] = Depends(current_partner)) -> dict
     }
 
 
+@app.get("/partner/documents")
+def list_partner_documents(user: dict[str, Any] = Depends(current_partner)) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, professional_id, document_type, file_name, mime_type,
+                       document_hash, verification_status, rejection_reason,
+                       created_at, reviewed_at
+                FROM partner_documents
+                WHERE partner_id = %s
+                ORDER BY created_at DESC
+                """,
+                (user["partner_id"],),
+            )
+            documents = cursor.fetchall()
+    return {
+        "documents": [
+            {
+                "id": item[0],
+                "professionalId": item[1],
+                "documentType": item[2],
+                "fileName": item[3],
+                "mimeType": item[4],
+                "documentHash": item[5],
+                "verificationStatus": item[6],
+                "rejectionReason": item[7] or "",
+                "createdAt": item[8].isoformat(),
+                "reviewedAt": item[9].isoformat() if item[9] else None,
+                "contentUrl": f"/partner/documents/{item[0]}/content",
+            }
+            for item in documents
+        ]
+    }
+
+
+def _document_requirements(documents: list[tuple[Any, ...]]) -> dict[str, Any]:
+    approved_types = {
+        item[1]
+        for item in documents
+        if item[2] == "approved"
+    }
+    pending_types = {
+        item[1]
+        for item in documents
+        if item[2] == "pending"
+    }
+    rejected_types = {
+        item[1]
+        for item in documents
+        if item[2] == "rejected"
+    }
+    missing = [
+        {"type": document_type, "label": label}
+        for document_type, label in REQUIRED_PARTNER_DOCUMENTS.items()
+        if document_type not in approved_types
+    ]
+    return {
+        "required": [
+            {"type": document_type, "label": label}
+            for document_type, label in REQUIRED_PARTNER_DOCUMENTS.items()
+        ],
+        "missing": missing,
+        "pendingTypes": sorted(pending_types),
+        "rejectedTypes": sorted(rejected_types),
+        "readyForApproval": not missing,
+    }
+
+
+@app.get("/admin/partners/{partner_id}/documents")
+def list_admin_partner_documents(
+    partner_id: int,
+    _: dict[str, Any] = Depends(current_admin),
+) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT p.id, p.name, p.partner_type, p.cnpj, p.email, p.status,
+                       p.verification_status
+                FROM partner_profiles AS p
+                WHERE p.id = %s
+                """,
+                (partner_id,),
+            )
+            partner = cursor.fetchone()
+            if partner is None:
+                raise HTTPException(status_code=404, detail="Parceiro não encontrado.")
+            cursor.execute(
+                """
+                SELECT d.id, d.document_type, d.file_name, d.mime_type,
+                       d.document_hash, d.verification_status, d.rejection_reason,
+                       d.created_at, d.reviewed_at, d.reviewed_by, u.email
+                FROM partner_documents AS d
+                LEFT JOIN users AS u ON u.id = d.reviewed_by
+                WHERE d.partner_id = %s
+                ORDER BY d.created_at DESC
+                """,
+                (partner_id,),
+            )
+            documents = cursor.fetchall()
+    return {
+        "partner": {
+            "id": partner[0],
+            "name": partner[1],
+            "partnerType": partner[2],
+            "document": partner[3],
+            "email": partner[4],
+            "status": partner[5],
+            "verificationStatus": partner[6],
+        },
+        "requirements": _document_requirements(documents),
+        "documents": [
+            {
+                "id": item[0],
+                "documentType": item[1],
+                "fileName": item[2],
+                "mimeType": item[3],
+                "documentHash": item[4],
+                "verificationStatus": item[5],
+                "rejectionReason": item[6] or "",
+                "createdAt": item[7].isoformat(),
+                "reviewedAt": item[8].isoformat() if item[8] else None,
+                "reviewedBy": item[10] or "",
+                "contentUrl": f"/admin/partner-documents/{item[0]}/content",
+            }
+            for item in documents
+        ],
+    }
+
+
+@app.get("/admin/partner-documents/{document_id}/content")
+def download_admin_partner_document(
+    document_id: int,
+    admin: dict[str, Any] = Depends(current_admin),
+) -> FileResponse:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT storage_key, file_name, mime_type, partner_id
+                FROM partner_documents
+                WHERE id = %s
+                """,
+                (document_id,),
+            )
+            document = cursor.fetchone()
+            if document is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO partner_document_access_audits
+                        (document_id, partner_id, actor_user_id, action)
+                    VALUES (%s, %s, %s, 'admin_download')
+                    """,
+                    (document_id, document[3], int(admin["sub"])),
+                )
+    return _protected_document_response(document)
+
+
+def _protected_document_response(document: tuple[Any, ...] | None) -> FileResponse:
+    if document is None:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+    try:
+        storage_path = resolve_storage_path(PARTNER_DOCUMENTS_DIR, document[0])
+    except InvalidDocument as error:
+        logger.error("document_storage_path_rejected storage_key=%r", document[0])
+        raise HTTPException(status_code=404, detail="Documento não encontrado.") from error
+    if not os.path.isfile(storage_path):
+        raise HTTPException(status_code=404, detail="Arquivo do documento não encontrado.")
+    with open(storage_path, "rb") as document_file:
+        header = document_file.read(16)
+    try:
+        detected_mime = detect_document_mime(header)
+        download_name = safe_document_name(document[1] or "documento")
+    except InvalidDocument as error:
+        logger.error("document_content_rejected storage_key=%r", document[0])
+        raise HTTPException(status_code=415, detail="Formato de documento não permitido.") from error
+    return FileResponse(
+        storage_path,
+        media_type=detected_mime,
+        filename=download_name,
+        content_disposition_type="attachment",
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/partner/documents/{document_id}/content")
+def download_own_partner_document(
+    document_id: int,
+    user: dict[str, Any] = Depends(current_partner),
+) -> FileResponse:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT storage_key, file_name, mime_type, partner_id
+                FROM partner_documents
+                WHERE id = %s AND partner_id = %s
+                """,
+                (document_id, user["partner_id"]),
+            )
+            document = cursor.fetchone()
+            if document is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO partner_document_access_audits
+                        (document_id, partner_id, actor_user_id, action)
+                    VALUES (%s, %s, %s, 'partner_download')
+                    """,
+                    (document_id, user["partner_id"], int(user["sub"])),
+                )
+    return _protected_document_response(document)
+
+
+@app.post("/partner/documents")
+def upload_partner_document(
+    request: PartnerDocumentRequest,
+    user: dict[str, Any] = Depends(current_partner),
+) -> dict[str, Any]:
+    try:
+        content = base64.b64decode(request.contentBase64, validate=True)
+    except (ValueError, base64.binascii.Error) as error:
+        raise HTTPException(status_code=400, detail="Arquivo profissional inválido.") from error
+    if not content or len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="O documento deve ter até 8 MB.")
+    try:
+        document_type = validate_document_type(request.documentType)
+        safe_name, detected_mime = validate_document(
+            content,
+            request.fileName,
+            request.mimeType,
+        )
+    except InvalidDocument as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    document_hash = hashlib.sha256(content).hexdigest()
+    storage_key = f"{user['partner_id']}/{uuid.uuid4().hex}-{safe_name}"
+    storage_path = resolve_storage_path(PARTNER_DOCUMENTS_DIR, storage_key)
+    partner_directory = os.path.dirname(storage_path)
+    os.makedirs(partner_directory, mode=0o700, exist_ok=True)
+    file_descriptor = os.open(storage_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(file_descriptor, "wb") as document_file:
+            document_file.write(content)
+            document_file.flush()
+            os.fsync(document_file.fileno())
+        with database_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO partner_documents
+                        (partner_id, document_type, storage_key, document_hash,
+                         file_name, mime_type, verification_status)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'pending')
+                    RETURNING id, created_at
+                    """,
+                    (
+                        user["partner_id"], document_type, storage_key,
+                        document_hash, safe_name, detected_mime,
+                    ),
+                )
+                document_id, created_at = cursor.fetchone()
+                cursor.execute(
+                    """
+                    INSERT INTO partner_document_access_audits
+                        (document_id, partner_id, actor_user_id, action)
+                    VALUES (%s, %s, %s, 'upload')
+                    """,
+                    (document_id, user["partner_id"], int(user["sub"])),
+                )
+    except Exception:
+        try:
+            os.unlink(storage_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return {
+        "id": document_id,
+        "documentType": document_type,
+        "documentHash": document_hash,
+        "verificationStatus": "pending",
+        "createdAt": created_at.isoformat(),
+    }
+
+
 @app.put("/partner/profile")
 def update_partner_profile(
     request: PartnerProfileUpdateRequest,
@@ -2220,6 +2889,43 @@ def create_partner(
     return {"id": partner_id, "status": "active", "createdAt": created_at.isoformat()}
 
 
+@app.get("/admin/partners")
+def list_admin_partners(_: dict[str, Any] = Depends(current_admin)) -> list[dict[str, Any]]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT p.id, p.name, p.partner_type, p.cnpj, p.email, p.phone,
+                       p.city, p.state, p.status, p.verification_status, p.created_at,
+                       u.email, COUNT(d.id)
+                FROM partner_profiles AS p
+                LEFT JOIN users AS u ON u.id = p.owner_user_id
+                LEFT JOIN partner_documents AS d ON d.partner_id = p.id
+                GROUP BY p.id, u.email
+                ORDER BY CASE WHEN p.verification_status = 'pending' THEN 0 ELSE 1 END,
+                         p.created_at DESC
+                """
+            )
+            partners = cursor.fetchall()
+    return [
+        {
+            "id": item[0],
+            "name": item[1],
+            "partnerType": item[2],
+            "document": item[3],
+            "email": item[4] or item[11] or "",
+            "phone": item[5],
+            "city": item[6],
+            "state": item[7],
+            "status": item[8],
+            "verificationStatus": item[9],
+            "createdAt": item[10].isoformat(),
+            "documentCount": item[12],
+        }
+        for item in partners
+    ]
+
+
 @app.patch("/admin/partners/{partner_id}/status")
 def update_partner_status(
     partner_id: int,
@@ -2230,6 +2936,23 @@ def update_partner_status(
         raise HTTPException(status_code=422, detail="Status de parceiro inválido.")
     with database_connection() as connection:
         with connection.cursor() as cursor:
+            if request.status == "active":
+                cursor.execute(
+                    """
+                    SELECT id, document_type, verification_status
+                    FROM partner_documents
+                    WHERE partner_id = %s
+                    """,
+                    (partner_id,),
+                )
+                documents = cursor.fetchall()
+                requirements = _document_requirements(documents)
+                if not requirements["readyForApproval"]:
+                    missing = ", ".join(item["label"] for item in requirements["missing"])
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Aprovação bloqueada. Documentos obrigatórios pendentes: {missing}.",
+                    )
             cursor.execute(
                 """
                 UPDATE partner_profiles
@@ -2247,6 +2970,66 @@ def update_partner_status(
             )
             if cursor.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Parceiro não encontrado.")
+            if request.status == "active":
+                cursor.execute(
+                    """
+                    UPDATE partner_professionals
+                    SET verification_status = 'approved', verified_at = COALESCE(verified_at, now()),
+                        verified_by = %s, updated_at = now()
+                    WHERE partner_id = %s
+                    """,
+                    (int(admin_user["sub"]), partner_id),
+                )
+    return {"status": request.status}
+
+
+@app.patch("/admin/partner-documents/{document_id}")
+def review_partner_document(
+    document_id: int,
+    request: PartnerDocumentReviewRequest,
+    admin_user: dict[str, Any] = Depends(current_admin),
+) -> dict[str, str]:
+    if request.status not in {"pending", "approved", "rejected"}:
+        raise HTTPException(status_code=422, detail="Status de documento inválido.")
+    if request.status == "rejected" and not request.rejectionReason.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Informe a justificativa para rejeitar o documento.",
+        )
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT partner_id, verification_status
+                FROM partner_documents
+                WHERE id = %s
+                """,
+                (document_id,),
+            )
+            document = cursor.fetchone()
+            if document is None:
+                raise HTTPException(status_code=404, detail="Documento não encontrado.")
+            cursor.execute(
+                """
+                UPDATE partner_documents
+                SET verification_status = %s, rejection_reason = %s,
+                    reviewed_by = %s, reviewed_at = now()
+                WHERE id = %s
+                """,
+                (request.status, request.rejectionReason.strip(), int(admin_user["sub"]), document_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO partner_document_audits
+                    (document_id, partner_id, admin_user_id, previous_status,
+                     new_status, rejection_reason)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    document_id, document[0], int(admin_user["sub"]), document[1],
+                    request.status, request.rejectionReason.strip(),
+                ),
+            )
     return {"status": request.status}
 
 
@@ -2438,6 +3221,15 @@ def create_appointment(
                 ),
             )
             appointment_id, created_at = cursor.fetchone()
+            cursor.execute(
+                """
+                INSERT INTO appointment_status_audits
+                    (appointment_id, actor_user_id, actor_role,
+                     previous_status, new_status)
+                VALUES (%s, %s, 'client', NULL, 'requested')
+                """,
+                (appointment_id, int(user["sub"])),
+            )
     return {
         "id": appointment_id,
         "partnerId": request.partnerId,
@@ -2454,24 +3246,55 @@ def update_appointment_status(
     request: AppointmentStatusRequest,
     user: dict[str, Any] = Depends(require_family),
 ) -> dict[str, Any]:
-    allowed_statuses = {"requested", "confirmed", "cancelled", "checked_in", "completed"}
-    if request.status not in allowed_statuses:
-        raise HTTPException(status_code=422, detail="Status de atendimento inválido.")
-    check_in_at = utc_now() if request.status == "checked_in" else None
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                UPDATE appointments
-                SET status = %s, check_in_at = COALESCE(%s, check_in_at), updated_at = now()
+                SELECT id, status, check_in_at, updated_at
+                FROM appointments
                 WHERE id = %s AND user_id = %s
-                RETURNING id, status, check_in_at, updated_at
+                FOR UPDATE
                 """,
-                (request.status, check_in_at, appointment_id, int(user["sub"])),
+                (appointment_id, int(user["sub"])),
             )
             appointment = cursor.fetchone()
-    if appointment is None:
-        raise HTTPException(status_code=404, detail="Atendimento não encontrado.")
+            if appointment is None:
+                raise HTTPException(status_code=404, detail="Atendimento não encontrado.")
+            try:
+                target_status = validate_appointment_transition(
+                    appointment[1],
+                    request.status,
+                    "client",
+                )
+            except InvalidAppointmentTransition as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            if target_status != appointment[1]:
+                check_in_at = utc_now() if target_status == "checked_in" else appointment[2]
+                cursor.execute(
+                    """
+                    UPDATE appointments
+                    SET status = %s, check_in_at = %s, updated_at = now()
+                    WHERE id = %s
+                    RETURNING id, status, check_in_at, updated_at
+                    """,
+                    (target_status, check_in_at, appointment_id),
+                )
+                updated = cursor.fetchone()
+                cursor.execute(
+                    """
+                    INSERT INTO appointment_status_audits
+                        (appointment_id, actor_user_id, actor_role,
+                         previous_status, new_status)
+                    VALUES (%s, %s, 'client', %s, %s)
+                    """,
+                    (
+                        appointment_id,
+                        int(user["sub"]),
+                        appointment[1],
+                        target_status,
+                    ),
+                )
+                appointment = updated
     return {
         "id": appointment[0],
         "status": appointment[1],
@@ -2486,24 +3309,100 @@ def update_partner_appointment_status(
     request: AppointmentStatusRequest,
     user: dict[str, Any] = Depends(require_partner_access),
 ) -> dict[str, Any]:
-    allowed_statuses = {"confirmed", "cancelled", "completed"}
-    if request.status not in allowed_statuses:
-        raise HTTPException(status_code=422, detail="Status de atendimento inválido para o parceiro.")
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
-                UPDATE appointments
-                SET status = %s, updated_at = now()
+                SELECT id, status, updated_at
+                FROM appointments
                 WHERE id = %s AND partner_id = %s
-                RETURNING id, status, updated_at
+                FOR UPDATE
                 """,
-                (request.status, appointment_id, user["partner_id"]),
+                (appointment_id, user["partner_id"]),
             )
             appointment = cursor.fetchone()
-    if appointment is None:
-        raise HTTPException(status_code=404, detail="Atendimento não encontrado.")
+            if appointment is None:
+                raise HTTPException(status_code=404, detail="Atendimento não encontrado.")
+            try:
+                target_status = validate_appointment_transition(
+                    appointment[1],
+                    request.status,
+                    "partner",
+                )
+            except InvalidAppointmentTransition as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            if target_status != appointment[1]:
+                cursor.execute(
+                    """
+                    UPDATE appointments
+                    SET status = %s, updated_at = now()
+                    WHERE id = %s
+                    RETURNING id, status, updated_at
+                    """,
+                    (target_status, appointment_id),
+                )
+                updated = cursor.fetchone()
+                cursor.execute(
+                    """
+                    INSERT INTO appointment_status_audits
+                        (appointment_id, actor_user_id, actor_role,
+                         previous_status, new_status)
+                    VALUES (%s, %s, 'partner', %s, %s)
+                    """,
+                    (
+                        appointment_id,
+                        int(user["sub"]),
+                        appointment[1],
+                        target_status,
+                    ),
+                )
+                appointment = updated
     return {"id": appointment[0], "status": appointment[1], "updatedAt": appointment[2].isoformat()}
+
+
+@app.get("/partner/appointments")
+def list_partner_appointments(
+    user: dict[str, Any] = Depends(require_partner_access),
+) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT appointments.id, appointments.user_id,
+                       clients.full_name, clients.email,
+                       appointments.pet_ref, appointments.pet_name,
+                       appointments.service, appointments.scheduled_at,
+                       appointments.status, appointments.notes,
+                       appointments.check_in_at, appointments.created_at,
+                       appointments.updated_at
+                FROM appointments
+                JOIN users AS clients ON clients.id = appointments.user_id
+                WHERE appointments.partner_id = %s
+                ORDER BY appointments.scheduled_at ASC, appointments.id ASC
+                """,
+                (user["partner_id"],),
+            )
+            appointments = cursor.fetchall()
+    return {
+        "appointments": [
+            {
+                "id": item[0],
+                "clientId": item[1],
+                "clientName": item[2] or item[3],
+                "clientEmail": item[3],
+                "petId": item[4],
+                "petName": item[5],
+                "service": item[6],
+                "scheduledAt": item[7].isoformat(),
+                "status": item[8],
+                "notes": item[9],
+                "checkInAt": item[10].isoformat() if item[10] else None,
+                "createdAt": item[11].isoformat(),
+                "updatedAt": item[12].isoformat(),
+            }
+            for item in appointments
+        ]
+    }
 
 
 @app.get("/billing/catalog")
@@ -3018,7 +3917,7 @@ def create_user_reset_token(user_id: int, _: dict[str, Any] = Depends(current_ad
 
 @app.post("/sync/batch")
 def push_batch(batch: SyncBatch, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    if batch.contractVersion != "v1":
+    if batch.contractVersion != "v2":
         raise HTTPException(status_code=422, detail="Versão de contrato não suportada.")
     user_id = int(user["sub"])
     acknowledged_ids = [operation.id for operation in batch.operations]
@@ -3026,6 +3925,18 @@ def push_batch(batch: SyncBatch, user: dict[str, Any] = Depends(current_user)) -
 
     with database_connection() as connection:
         with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT revision FROM user_snapshots WHERE user_id = %s FOR UPDATE",
+                (user_id,),
+            )
+            current = cursor.fetchone()
+            current_revision = int(current[0]) if current else 0
+            if batch.baseRevision != current_revision:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Os dados desta conta foram atualizados em outro aparelho. Baixe a versão mais recente antes de enviar novas alterações.",
+                )
+            next_revision = current_revision + 1
             cursor.execute(
                 """
                 INSERT INTO sync_batches
@@ -3062,16 +3973,188 @@ def push_batch(batch: SyncBatch, user: dict[str, Any] = Depends(current_user)) -
                 )
             cursor.execute(
                 """
-                INSERT INTO user_snapshots (user_id, snapshot, updated_at)
-                VALUES (%s, %s, %s)
+                INSERT INTO user_snapshots
+                    (user_id, snapshot, revision, generated_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (user_id) DO UPDATE
                     SET snapshot = EXCLUDED.snapshot,
+                        revision = EXCLUDED.revision,
+                        generated_at = EXCLUDED.generated_at,
                         updated_at = EXCLUDED.updated_at
                 """,
-                (user_id, psycopg.types.json.Jsonb(batch.snapshot), received_at),
+                (
+                    user_id,
+                    psycopg.types.json.Jsonb(batch.snapshot),
+                    next_revision,
+                    batch.generatedAt,
+                    received_at,
+                ),
             )
 
     return {
         "acknowledgedOperationIds": acknowledged_ids,
+        "revision": next_revision,
         "serverTime": received_at.isoformat(),
+    }
+
+
+@app.get("/sync/snapshot")
+def get_snapshot(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    user_id = int(user["sub"])
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT snapshot, revision, generated_at, updated_at
+                FROM user_snapshots
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            stored = cursor.fetchone()
+    if stored is None:
+        return {"snapshot": None, "revision": 0}
+    return {
+        "snapshot": stored[0],
+        "revision": int(stored[1]),
+        "generatedAt": stored[2].isoformat(),
+        "updatedAt": stored[3].isoformat(),
+    }
+
+
+@app.post("/sync/entities")
+def push_entities(
+    batch: EntityBatch,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    user_id = int(user["sub"])
+    acknowledged: list[dict[str, Any]] = []
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            for change in batch.changes:
+                cursor.execute(
+                    """
+                    SELECT entity_type, entity_id, version
+                    FROM entity_sync_operations
+                    WHERE user_id = %s AND operation_id = %s
+                    """,
+                    (user_id, change.operationId),
+                )
+                processed = cursor.fetchone()
+                if processed is not None:
+                    if processed[0] != change.entityType or processed[1] != change.entityId:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Identificador de operação já utilizado por outra entidade.",
+                        )
+                    acknowledged.append(
+                        {
+                            "operationId": change.operationId,
+                            "entityType": change.entityType,
+                            "entityId": change.entityId,
+                            "version": int(processed[2]),
+                        }
+                    )
+                    continue
+                cursor.execute(
+                    """
+                    SELECT version
+                    FROM user_entities
+                    WHERE user_id = %s AND entity_type = %s AND entity_id = %s
+                    FOR UPDATE
+                    """,
+                    (user_id, change.entityType, change.entityId),
+                )
+                current = cursor.fetchone()
+                current_version = int(current[0]) if current else 0
+                if change.baseVersion != current_version:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Conflito na entidade {change.entityType}:{change.entityId}.",
+                    )
+                if not change.deleted and change.payload is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Uma entidade ativa precisa conter payload.",
+                    )
+                next_version = current_version + 1
+                cursor.execute(
+                    """
+                    INSERT INTO user_entities
+                        (user_id, entity_type, entity_id, version, deleted,
+                         payload, changed_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (user_id, entity_type, entity_id) DO UPDATE SET
+                        version = EXCLUDED.version,
+                        deleted = EXCLUDED.deleted,
+                        payload = EXCLUDED.payload,
+                        changed_at = EXCLUDED.changed_at,
+                        updated_at = now()
+                    """,
+                    (
+                        user_id,
+                        change.entityType,
+                        change.entityId,
+                        next_version,
+                        change.deleted,
+                        None if change.deleted else psycopg.types.json.Jsonb(change.payload),
+                        change.changedAt,
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO entity_sync_operations
+                        (user_id, operation_id, entity_type, entity_id, version)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        user_id,
+                        change.operationId,
+                        change.entityType,
+                        change.entityId,
+                        next_version,
+                    ),
+                )
+                acknowledged.append(
+                    {
+                        "operationId": change.operationId,
+                        "entityType": change.entityType,
+                        "entityId": change.entityId,
+                        "version": next_version,
+                    }
+                )
+    return {"acknowledged": acknowledged, "serverTime": utc_now().isoformat()}
+
+
+@app.get("/sync/entities")
+def get_entities(
+    entityType: str = Query(pattern="^(pet|vaccine|weight|medication)$"),
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    user_id = int(user["sub"])
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT entity_id, version, deleted, payload, changed_at, updated_at
+                FROM user_entities
+                WHERE user_id = %s AND entity_type = %s
+                ORDER BY updated_at, entity_id
+                """,
+                (user_id, entityType),
+            )
+            rows = cursor.fetchall()
+    return {
+        "entities": [
+            {
+                "entityType": entityType,
+                "entityId": row[0],
+                "version": int(row[1]),
+                "deleted": bool(row[2]),
+                "payload": row[3],
+                "changedAt": row[4].isoformat(),
+                "updatedAt": row[5].isoformat(),
+            }
+            for row in rows
+        ]
     }

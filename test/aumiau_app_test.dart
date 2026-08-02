@@ -1,5 +1,6 @@
 import 'package:aumiau_app/main.dart';
-import 'package:aumiau_app/data/app_database.dart';
+import 'package:aumiau_app/data/app_database.dart' hide Pet;
+import 'package:aumiau_app/data/account_scope.dart';
 import 'package:aumiau_app/domain/product_plan.dart';
 import 'package:aumiau_app/domain/partner_directory.dart';
 import 'package:aumiau_app/domain/brazil_documents.dart';
@@ -15,7 +16,74 @@ import 'package:http/http.dart' as http;
 import 'package:aumiau_app/services/update_service.dart';
 
 void main() {
+  test('novo pet aceita registros clínicos na sessão atual', () {
+    final pet = Pet(
+      name: 'Teste',
+      species: 'Cão',
+      breed: 'SRD',
+      emoji: '🐾',
+      weight: 0,
+    );
+
+    pet.vaccines.add(
+      VaccineRecord(petId: 1, name: 'V4', appliedAt: DateTime.utc(2026, 8, 1)),
+    );
+    pet.weights.add(
+      WeightRecord(petId: 1, weight: 4.5, measuredAt: DateTime.utc(2026, 8, 1)),
+    );
+
+    expect(pet.vaccines, hasLength(1));
+    expect(pet.weights, hasLength(1));
+  });
+
   driftRuntimeOptions.dontWarnAboutMultipleDatabases = true;
+
+  test('gera armazenamento local estável e distinto para cada conta', () {
+    final client = accountDatabaseName(' Cezar+Cliente@Gmail.com ');
+    final sameClient = accountDatabaseName('cezar+cliente@gmail.com');
+    final partner = accountDatabaseName('cezar+parceiro@gmail.com');
+
+    expect(client, sameClient);
+    expect(client, isNot(partner));
+    expect(client, isNot(contains('gmail')));
+    expect(
+      accountPartnerDraftKey('cezar+cliente@gmail.com'),
+      contains(client.substring(15)),
+    );
+  });
+
+  test('bancos de contas distintas não compartilham dados locais', () async {
+    final client = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final partner = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+
+    await client.saveProfile(
+      name: 'Cliente de validação',
+      email: 'cezar+cliente@gmail.com',
+    );
+    await client.addPet(
+      name: 'Negão',
+      species: 'Cão',
+      breed: 'SRD',
+      emoji: '🐾',
+    );
+    await partner.saveProfile(
+      name: 'Parceiro operacional',
+      email: 'cezar+parceiro@gmail.com',
+    );
+
+    expect((await client.loadPets()).single.name, 'Negão');
+    expect(await partner.loadPets(), isEmpty);
+    expect((await partner.loadProfile())?.email, 'cezar+parceiro@gmail.com');
+
+    await client.close();
+    await partner.close();
+  });
 
   test('formata e valida CPF e CNPJ do cadastro Parceiro', () {
     expect(BrazilDocuments.formatCpfCnpj('41633032272'), '416.330.322-72');
@@ -86,6 +154,24 @@ void main() {
     expect(profile?.familyValidUntil, validUntil);
     await database.close();
   });
+
+  test(
+    'atualização de plano recebida do servidor não cria novo upload',
+    () async {
+      final database = AppDatabase.fromExecutor(
+        NativeDatabase.memory(),
+        seedDemoData: false,
+      );
+      await database.saveProfile(
+        name: 'Conta sincronizada',
+        email: 'conta@aumiau.app',
+        recordSyncOperation: false,
+      );
+
+      expect(await database.loadPendingSyncOperations(), isEmpty);
+      await database.close();
+    },
+  );
 
   test('salva pet, vacina e reagendamento no banco local', () async {
     final database = AppDatabase.fromExecutor(NativeDatabase.memory());
@@ -294,13 +380,50 @@ void main() {
   test('exporta e restaura backup local com fila de sincronização', () async {
     final source = AppDatabase.fromExecutor(NativeDatabase.memory());
     await source.saveProfile(name: 'Cezar AuMiau', email: 'cezar@aumiau.app');
-    await source.addPet(
+    final petId = await source.addPet(
       name: 'Nina',
       species: 'Gata',
       breed: 'SRD',
       emoji: '🐱',
     );
+    await source.addVaccine(
+      petId: petId,
+      name: 'V4',
+      appliedAt: DateTime.utc(2026, 8, 1),
+    );
+    await source.addWeight(
+      petId: petId,
+      weight: 4.2,
+      measuredAt: DateTime.utc(2026, 8, 1),
+    );
+    await source.addMedicationPlan(
+      petId: petId,
+      name: 'Medicamento',
+      dosage: '1 comprimido',
+      schedule: 'Uma vez ao dia',
+      startAt: DateTime.utc(2026, 8, 1),
+    );
     final snapshot = await source.exportSnapshot();
+
+    expect(
+      (snapshot['vaccines'] as List).any(
+        (item) => (item as Map)['name'] == 'V4' && item['petId'] == petId,
+      ),
+      isTrue,
+    );
+    expect(
+      (snapshot['weights'] as List).any(
+        (item) => (item as Map)['weight'] == 4.2 && item['petId'] == petId,
+      ),
+      isTrue,
+    );
+    expect(
+      (snapshot['medications'] as List).any(
+        (item) =>
+            (item as Map)['name'] == 'Medicamento' && item['petId'] == petId,
+      ),
+      isTrue,
+    );
 
     final target = AppDatabase.fromExecutor(NativeDatabase.memory());
     await target.restoreSnapshot(snapshot);
@@ -309,6 +432,24 @@ void main() {
     expect(profile?.name, 'Cezar AuMiau');
     expect(profile?.email, 'cezar@aumiau.app');
     expect((await target.loadPets()).any((pet) => pet.name == 'Nina'), isTrue);
+    expect(
+      (await target.loadVaccines()).any(
+        (item) => item.name == 'V4' && item.petId == petId,
+      ),
+      isTrue,
+    );
+    expect(
+      (await target.loadWeights()).any(
+        (item) => item.weight == 4.2 && item.petId == petId,
+      ),
+      isTrue,
+    );
+    expect(
+      (await target.loadMedicationPlans()).any(
+        (item) => item.name == 'Medicamento' && item.petId == petId,
+      ),
+      isTrue,
+    );
     expect(
       (await target.loadPendingSyncOperations()).single.operation,
       'restore',
@@ -329,8 +470,19 @@ void main() {
     final service = SyncService(database);
     final batch = await service.buildPendingBatch();
 
-    expect(batch.contractVersion, 'v1');
+    expect(batch.contractVersion, 'v2');
+    expect(batch.baseRevision, 0);
+    expect(batch.toJson()['generatedAt'], endsWith('Z'));
+    expect(
+      (batch.toJson()['operations'] as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .first['occurredAt'],
+      endsWith('Z'),
+    );
     expect(batch.snapshot['format'], 'aumiau-backup');
+    expect(batch.snapshot.containsKey('vaccines'), isFalse);
+    expect(batch.snapshot.containsKey('weights'), isFalse);
+    expect(batch.snapshot.containsKey('medications'), isFalse);
     expect(batch.operations.any((item) => item.entityId == petId), isTrue);
 
     await service.acknowledge(batch);
@@ -356,9 +508,307 @@ void main() {
 
     expect(acknowledgement?.acknowledgedOperationIds, isNotEmpty);
     expect(gateway.receivedToken, 'token-de-teste');
-    expect(gateway.receivedPayload?['contractVersion'], 'v1');
+    expect(gateway.receivedEntityChanges, hasLength(1));
+    expect(gateway.receivedEntityChanges.single['entityType'], 'pet');
+    expect(
+      (gateway.receivedEntityChanges.single['payload'] as Map)['name'],
+      'Nina',
+    );
+    expect(await database.loadSyncRevision(), 0);
     expect(await database.loadPendingSyncOperations(), isEmpty);
     await database.close();
+  });
+
+  test('restaura snapshot remoto quando o banco local está vazio', () async {
+    final source = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    await source.saveProfile(name: 'Conta remota', email: 'conta@aumiau.app');
+    await source.addPet(
+      name: 'Nina',
+      species: 'Gata',
+      breed: 'SRD',
+      emoji: '🐾',
+    );
+    final remoteSnapshot = await source.exportSnapshot();
+
+    final target = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final gateway = _FakeSyncGateway(
+      remoteSnapshot: RemoteSnapshot(snapshot: remoteSnapshot, revision: 7),
+    );
+    await SyncService(
+      target,
+    ).pullLatest(gateway: gateway, accessToken: 'token-de-teste');
+
+    expect((await target.loadPets()).single.name, 'Nina');
+    expect(await target.loadSyncRevision(), 7);
+    expect(await target.loadPendingSyncOperations(), isEmpty);
+
+    await source.close();
+    await target.close();
+  });
+
+  test(
+    'mescla pets criados em aparelhos diferentes sem colisão local',
+    () async {
+      final gateway = _FakeSyncGateway();
+      final firstDevice = AppDatabase.fromExecutor(
+        NativeDatabase.memory(),
+        seedDemoData: false,
+      );
+      final secondDevice = AppDatabase.fromExecutor(
+        NativeDatabase.memory(),
+        seedDemoData: false,
+      );
+
+      await firstDevice.addPet(
+        name: 'Nina',
+        species: 'Gata',
+        breed: 'SRD',
+        emoji: '🐾',
+      );
+      await SyncService(
+        firstDevice,
+      ).synchronize(gateway: gateway, accessToken: 'token');
+      await SyncService(
+        secondDevice,
+      ).synchronize(gateway: gateway, accessToken: 'token');
+
+      await secondDevice.addPet(
+        name: 'Thor',
+        species: 'Cão',
+        breed: 'SRD',
+        emoji: '🐾',
+      );
+      await SyncService(
+        secondDevice,
+      ).synchronize(gateway: gateway, accessToken: 'token');
+      await SyncService(
+        firstDevice,
+      ).synchronize(gateway: gateway, accessToken: 'token');
+
+      expect((await firstDevice.loadPets()).map((pet) => pet.name).toSet(), {
+        'Nina',
+        'Thor',
+      });
+      expect((await secondDevice.loadPets()).map((pet) => pet.name).toSet(), {
+        'Nina',
+        'Thor',
+      });
+
+      await firstDevice.close();
+      await secondDevice.close();
+    },
+  );
+
+  test('compacta várias alterações offline do mesmo pet', () async {
+    final database = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final gateway = _FakeSyncGateway();
+    final petId = await database.addPet(
+      name: 'Nome inicial',
+      species: 'Cão',
+      breed: 'SRD',
+      emoji: '🐾',
+    );
+    await database.updatePetName(petId, 'Nome intermediário');
+    await database.updatePetName(petId, 'Nome definitivo');
+
+    final acknowledgement = await SyncService(
+      database,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+
+    expect(gateway.receivedEntityChanges, hasLength(1));
+    expect(
+      (gateway.receivedEntityChanges.single['payload'] as Map)['name'],
+      'Nome definitivo',
+    );
+    expect(acknowledgement?.acknowledgedOperationIds, hasLength(1));
+    expect(await database.loadPendingSyncOperations(), isEmpty);
+
+    await database.close();
+  });
+
+  test('propaga exclusão de pet por tombstone', () async {
+    final gateway = _FakeSyncGateway();
+    final firstDevice = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final secondDevice = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final petId = await firstDevice.addPet(
+      name: 'Nina',
+      species: 'Gata',
+      breed: 'SRD',
+      emoji: '🐾',
+    );
+    await SyncService(
+      firstDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    await SyncService(
+      secondDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+
+    await firstDevice.deletePet(petId);
+    await SyncService(
+      firstDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    await SyncService(
+      secondDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+
+    expect(await firstDevice.loadPets(), isEmpty);
+    expect(await secondDevice.loadPets(), isEmpty);
+
+    await firstDevice.close();
+    await secondDevice.close();
+  });
+
+  test('mescla vacinas, pesos e medicamentos entre aparelhos', () async {
+    final gateway = _FakeSyncGateway();
+    final firstDevice = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final secondDevice = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final petId = await firstDevice.addPet(
+      name: 'Luna',
+      species: 'Gata',
+      breed: 'SRD',
+      emoji: '🐾',
+    );
+    await firstDevice.addVaccine(
+      petId: petId,
+      name: 'V4',
+      appliedAt: DateTime.utc(2026, 8, 1),
+      nextDoseAt: DateTime.utc(2027, 8, 1),
+      clinicName: 'Clínica AuMiau',
+    );
+    await firstDevice.addWeight(
+      petId: petId,
+      weight: 4.7,
+      measuredAt: DateTime.utc(2026, 8, 1),
+      note: 'Peso estável',
+    );
+    final medicationId = await firstDevice.addMedicationPlan(
+      petId: petId,
+      name: 'Medicamento teste',
+      dosage: '1 comprimido',
+      schedule: 'A cada 12 horas',
+      startAt: DateTime.utc(2026, 8, 1),
+    );
+    await SyncService(
+      firstDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    await SyncService(
+      secondDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+
+    expect((await secondDevice.loadVaccines()).single.name, 'V4');
+    expect((await secondDevice.loadWeights()).single.weight, 4.7);
+    expect(
+      (await secondDevice.loadMedicationPlans()).single.name,
+      'Medicamento teste',
+    );
+
+    await firstDevice.markMedicationTaken(medicationId);
+    await SyncService(
+      firstDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    await SyncService(
+      secondDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    expect(
+      (await secondDevice.loadMedicationPlans()).single.lastTakenAt == null,
+      isFalse,
+    );
+
+    await firstDevice.close();
+    await secondDevice.close();
+  });
+
+  test('propaga tombstones das entidades clínicas', () async {
+    final gateway = _FakeSyncGateway();
+    final firstDevice = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final secondDevice = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final petId = await firstDevice.addPet(
+      name: 'Bento',
+      species: 'Cão',
+      breed: 'SRD',
+      emoji: '🐾',
+    );
+    final vaccineId = await firstDevice.addVaccine(
+      petId: petId,
+      name: 'Antirrábica',
+      appliedAt: DateTime.utc(2026, 8, 1),
+    );
+    final weightId = await firstDevice.addWeight(
+      petId: petId,
+      weight: 12.3,
+      measuredAt: DateTime.utc(2026, 8, 1),
+    );
+    final medicationId = await firstDevice.addMedicationPlan(
+      petId: petId,
+      name: 'Protetor',
+      dosage: '5 ml',
+      schedule: 'Uma vez ao dia',
+      startAt: DateTime.utc(2026, 8, 1),
+    );
+    await SyncService(
+      firstDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    await SyncService(
+      secondDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+
+    await firstDevice.deleteVaccine(vaccineId);
+    await firstDevice.deleteWeight(weightId);
+    await firstDevice.deleteMedicationPlan(medicationId);
+    await SyncService(
+      firstDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    await SyncService(
+      secondDevice,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+
+    expect(await secondDevice.loadVaccines(), isEmpty);
+    expect(await secondDevice.loadWeights(), isEmpty);
+    expect(await secondDevice.loadMedicationPlans(), isEmpty);
+    expect(
+      gateway.remoteEntities
+          .where(
+            (entity) =>
+                const {
+                  'vaccine',
+                  'weight',
+                  'medication',
+                }.contains(entity['entityType']) &&
+                entity['deleted'] == true,
+          )
+          .length,
+      3,
+    );
+
+    await firstDevice.close();
+    await secondDevice.close();
   });
 
   testWidgets('exibe o dashboard inicial do AuMiau', (tester) async {
@@ -409,7 +859,7 @@ void main() {
     await tester.tap(find.text('Cancelar'));
     await tester.pumpAndSettle();
     expect(find.text('Cadastro profissional'), findsNothing);
-    expect(find.text('AuMiau Parceiro(s)'), findsOneWidget);
+    expect(find.text('AuMiau Parceiro'), findsOneWidget);
   });
 
   testWidgets('Hoje usa primeiro e último nome do cadastro', (tester) async {
@@ -518,7 +968,12 @@ class _FakeHttpClient extends http.BaseClient {
 }
 
 class _FakeSyncGateway implements SyncGateway {
+  _FakeSyncGateway({this.remoteSnapshot});
+
+  final RemoteSnapshot? remoteSnapshot;
   Map<String, dynamic>? receivedPayload;
+  List<Map<String, dynamic>> receivedEntityChanges = [];
+  final List<Map<String, dynamic>> remoteEntities = [];
   String? receivedToken;
 
   @override
@@ -575,6 +1030,54 @@ class _FakeSyncGateway implements SyncGateway {
   Future<void> logout({required String accessToken}) async {}
 
   @override
+  Future<RemoteSnapshot> pullSnapshot({required String accessToken}) async =>
+      remoteSnapshot ?? const RemoteSnapshot(snapshot: null, revision: 0);
+
+  @override
+  Future<List<EntitySyncAck>> pushEntities({
+    required List<Map<String, dynamic>> changes,
+    required String accessToken,
+  }) async {
+    receivedToken = accessToken;
+    receivedEntityChanges = changes;
+    final versions = <String, int>{};
+    for (final change in changes) {
+      final existing = remoteEntities.cast<Map<String, dynamic>?>().firstWhere(
+        (item) => item?['entityId'] == change['entityId'],
+        orElse: () => null,
+      );
+      final version = ((existing?['version'] as num?)?.toInt() ?? 0) + 1;
+      versions[change['entityId'] as String] = version;
+      remoteEntities.removeWhere(
+        (item) => item['entityId'] == change['entityId'],
+      );
+      remoteEntities.add({
+        'entityType': change['entityType'],
+        'entityId': change['entityId'],
+        'version': version,
+        'deleted': change['deleted'],
+        'payload': change['payload'],
+      });
+    }
+    return changes
+        .map(
+          (change) => EntitySyncAck(
+            operationId: change['operationId'] as int,
+            entityId: change['entityId'] as String,
+            version: versions[change['entityId']]!,
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> pullEntities({
+    required String entityType,
+    required String accessToken,
+  }) async =>
+      remoteEntities.where((item) => item['entityType'] == entityType).toList();
+
+  @override
   Future<SyncBatchAck> pushBatch({
     required Map<String, dynamic> payload,
     required String accessToken,
@@ -586,6 +1089,7 @@ class _FakeSyncGateway implements SyncGateway {
       acknowledgedOperationIds: operations
           .map((item) => (item as Map<String, dynamic>)['id'] as int)
           .toList(),
+      revision: 1,
     );
   }
 }

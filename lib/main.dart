@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,6 +13,7 @@ import 'config/app_config.dart';
 import 'data/app_database.dart';
 import 'domain/partner_directory.dart';
 import 'domain/brazil_documents.dart';
+import 'domain/partner_profile.dart';
 import 'domain/product_plan.dart';
 import 'services/backup_service.dart';
 import 'services/notification_service.dart';
@@ -66,6 +68,9 @@ class AumiauApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'AuMiau',
+      locale: const Locale('pt', 'BR'),
+      supportedLocales: const [Locale('pt', 'BR')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       theme: ThemeData(
         colorScheme: scheme,
         scaffoldBackgroundColor: _paper,
@@ -133,11 +138,14 @@ class Pet {
     this.veterinarianReference = '',
     this.documentNotes = '',
     this.photoData,
-    this.vaccines = const [],
-    this.weights = const [],
-    this.preventives = const [],
-    this.medications = const [],
-  });
+    List<VaccineRecord> vaccines = const [],
+    List<WeightRecord> weights = const [],
+    List<PreventiveRecord> preventives = const [],
+    List<MedicationPlan> medications = const [],
+  }) : vaccines = List<VaccineRecord>.of(vaccines),
+       weights = List<WeightRecord>.of(weights),
+       preventives = List<PreventiveRecord>.of(preventives),
+       medications = List<MedicationPlan>.of(medications);
 
   final int? id;
   String name;
@@ -274,23 +282,42 @@ class Appointment {
   Appointment({
     this.id,
     required this.petId,
+    this.partnerId,
+    this.petName,
+    this.clientName,
+    this.clientEmail,
     required this.partnerName,
     required this.service,
     required this.scheduledAt,
     required this.status,
     this.notes,
+    this.checkInAt,
     required this.createdAt,
   });
 
   final int? id;
   final int petId;
+  final int? partnerId;
+  final String? petName;
+  final String? clientName;
+  final String? clientEmail;
   final String partnerName;
   final String service;
   final DateTime scheduledAt;
   String status;
   final String? notes;
+  DateTime? checkInAt;
   final DateTime createdAt;
 }
+
+String _appointmentStatusLabel(String status) => switch (status) {
+  'requested' => 'Solicitado',
+  'confirmed' => 'Confirmado',
+  'checked_in' || 'check_in' => 'Check-in realizado',
+  'completed' => 'Concluído',
+  'cancelled' => 'Cancelado',
+  _ => 'Em atualização',
+};
 
 class TimelineEntry {
   TimelineEntry({
@@ -430,6 +457,7 @@ class _HomeShellState extends State<HomeShell> {
       reminder.done = true;
       _history.insert(0, '${reminder.title} concluído');
     });
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -705,7 +733,8 @@ class PersistentHomeShell extends StatefulWidget {
 
 class _PersistentHomeShellState extends State<PersistentHomeShell> {
   int _selectedIndex = 0;
-  late final AppDatabase _database;
+  late AppDatabase _database;
+  String? _databaseAccountEmail;
   late final DateTime _today;
   List<Pet> _pets = [];
   List<Reminder> _reminders = [];
@@ -726,6 +755,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   bool _showProfileChooser = false;
   _AppMode _activeMode = _AppMode.client;
   bool _partnerRegistrationPending = false;
+  String _partnerVerificationStatus = 'not_submitted';
+  String _partnerProfileStatus = 'pending';
   _AuthScreen _authScreen = _AuthScreen.welcome;
   bool _authBusy = false;
   String? _pendingVerificationEmail;
@@ -751,9 +782,30 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   }
 
   Future<void> _initializeApp() async {
+    if (widget.database == null) {
+      final session = await _sessionStore.read();
+      if (session != null) {
+        await _switchDatabaseForAccount(session.email);
+      }
+    }
     await _loadData();
+    final draft = await _sessionStore.readPartnerDraft(_draftOwner);
+    if (draft != null) _partnerRegistrationPending = true;
     if (!mounted) return;
     await _restoreSession();
+  }
+
+  String get _draftOwner => _databaseAccountEmail ?? 'offline';
+
+  Future<void> _switchDatabaseForAccount(String? email) async {
+    if (widget.database != null) return;
+    final normalized = email?.trim().toLowerCase();
+    final target = normalized == null || normalized.isEmpty ? null : normalized;
+    if (_databaseAccountEmail == target) return;
+    final previous = _database;
+    _database = target == null ? AppDatabase() : AppDatabase.forAccount(target);
+    _databaseAccountEmail = target;
+    await previous.close();
   }
 
   Future<void> _checkForUpdates() async {
@@ -1945,6 +1997,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   void _showProductMessage(String message) {
     if (!mounted) return;
+    if (!mounted) return;
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
@@ -2892,6 +2945,90 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     service: service,
   );
 
+  Appointment _appointmentFromJson(
+    Map<String, dynamic> item, {
+    bool partnerView = false,
+  }) => Appointment(
+    id: (item['id'] as num?)?.toInt(),
+    petId: int.tryParse(item['petId']?.toString() ?? '') ?? 0,
+    partnerId: (item['partnerId'] as num?)?.toInt(),
+    petName: item['petName']?.toString(),
+    clientName: item['clientName']?.toString(),
+    clientEmail: item['clientEmail']?.toString(),
+    partnerName: partnerView
+        ? 'Atendimento solicitado'
+        : (item['partnerName']?.toString() ?? 'Parceiro AuMiau'),
+    service: item['service']?.toString() ?? 'Atendimento',
+    scheduledAt:
+        DateTime.tryParse(item['scheduledAt']?.toString() ?? '')?.toLocal() ??
+        DateTime.now(),
+    status: item['status']?.toString() ?? 'requested',
+    notes: item['notes']?.toString(),
+    checkInAt: DateTime.tryParse(
+      item['checkInAt']?.toString() ?? '',
+    )?.toLocal(),
+    createdAt:
+        DateTime.tryParse(item['createdAt']?.toString() ?? '')?.toLocal() ??
+        DateTime.now(),
+  );
+
+  String _appointmentErrorMessage(SyncGatewayException error) =>
+      switch (error.statusCode) {
+        404 => 'Este agendamento não está mais disponível. Atualize a agenda.',
+        409 => error.message,
+        429 =>
+          'Muitas ações em sequência. Aguarde um instante e tente novamente.',
+        _ => error.message,
+      };
+
+  Future<void> _loadRemoteAppointments() async {
+    final accessToken = _accessToken;
+    if (accessToken == null || accessToken.isEmpty) return;
+    try {
+      final items = await _syncGateway.loadAppointments(
+        accessToken: accessToken,
+      );
+      if (!mounted) return;
+      setState(() {
+        _appointments = items.map(_appointmentFromJson).toList();
+      });
+    } on SyncGatewayException {
+      // Mantém o cache local disponível quando não houver conexão.
+    }
+  }
+
+  Future<List<Appointment>> _loadPartnerAppointments() async {
+    final accessToken = _accessToken;
+    if (accessToken == null || accessToken.isEmpty) return const [];
+    final items = await _syncGateway.loadPartnerAppointments(
+      accessToken: accessToken,
+    );
+    return items
+        .map((item) => _appointmentFromJson(item, partnerView: true))
+        .toList();
+  }
+
+  Future<String> _updatePartnerAppointment(
+    Appointment appointment,
+    String status,
+  ) async {
+    final accessToken = _accessToken;
+    if (accessToken == null || appointment.id == null) {
+      return 'Entre novamente para atualizar este atendimento.';
+    }
+    try {
+      final result = await _syncGateway.updatePartnerAppointmentStatus(
+        accessToken: accessToken,
+        appointmentId: appointment.id!,
+        status: status,
+      );
+      appointment.status = result['status']?.toString() ?? status;
+      return 'Atendimento atualizado para ${_appointmentStatusLabel(appointment.status)}.';
+    } on SyncGatewayException catch (error) {
+      return _appointmentErrorMessage(error);
+    }
+  }
+
   Future<void> _openScheduleAppointment(PartnerClinic partner) async {
     if (_pets.isEmpty) {
       _showProductMessage('Cadastre um pet antes de solicitar atendimento.');
@@ -2974,7 +3111,9 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                     );
                   },
                   icon: const Icon(Icons.calendar_month_outlined),
-                  label: Text('Data e hora: ${_formatFullDate(scheduledAt)}'),
+                  label: Text(
+                    'Data e hora: ${_formatAppointmentDateTime(scheduledAt)}',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextField(
@@ -3000,26 +3139,59 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                   _showProductMessage('Informe o serviço e selecione o pet.');
                   return;
                 }
-                final id = await _database.addAppointment(
-                  petId: selectedPetId!,
-                  partnerName: partner.name,
-                  service: service,
-                  scheduledAt: scheduledAt,
-                  notes: notesController.text.trim().isEmpty
-                      ? null
-                      : notesController.text.trim(),
-                );
+                final accessToken = _accessToken;
+                final partnerId = int.tryParse(partner.id);
+                Pet? selectedPet;
+                for (final pet in _pets) {
+                  if (pet.id == selectedPetId) {
+                    selectedPet = pet;
+                    break;
+                  }
+                }
+                if (accessToken == null || accessToken.isEmpty) {
+                  _showProductMessage(
+                    'Entre na sua conta para solicitar o atendimento.',
+                  );
+                  return;
+                }
+                if (partnerId == null || selectedPet == null) {
+                  _showProductMessage(
+                    'Não foi possível identificar o parceiro ou o pet.',
+                  );
+                  return;
+                }
+                Map<String, dynamic> result;
+                try {
+                  result = await _syncGateway.createAppointment(
+                    accessToken: accessToken,
+                    partnerId: partnerId,
+                    petId: selectedPetId.toString(),
+                    petName: selectedPet.name,
+                    service: service,
+                    scheduledAt: scheduledAt,
+                    notes: notesController.text.trim(),
+                  );
+                } on SyncGatewayException catch (error) {
+                  _showProductMessage(_appointmentErrorMessage(error));
+                  return;
+                }
                 final appointment = Appointment(
-                  id: id,
+                  id: (result['id'] as num?)?.toInt(),
                   petId: selectedPetId!,
+                  partnerId: partnerId,
+                  petName: selectedPet.name,
                   partnerName: partner.name,
                   service: service,
                   scheduledAt: scheduledAt,
-                  status: 'agendado',
+                  status: result['status']?.toString() ?? 'requested',
                   notes: notesController.text.trim().isEmpty
                       ? null
                       : notesController.text.trim(),
-                  createdAt: DateTime.now(),
+                  createdAt:
+                      DateTime.tryParse(
+                        result['createdAt']?.toString() ?? '',
+                      )?.toLocal() ??
+                      DateTime.now(),
                 );
                 _appointments.insert(0, appointment);
                 _timeline.insert(
@@ -3033,9 +3205,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
                 );
                 if (mounted) setState(() {});
                 if (dialogContext.mounted) Navigator.pop(dialogContext);
-                _showProductMessage(
-                  'Atendimento registrado. Confirme a disponibilidade com o parceiro.',
-                );
+                _showProductMessage('Solicitação enviada ao parceiro.');
               },
               child: const Text('Registrar atendimento'),
             ),
@@ -3048,11 +3218,44 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   }
 
   Future<void> _checkInAppointment(Appointment appointment) async {
-    if (appointment.id == null) return;
-    await _database.updateAppointmentStatus(appointment.id!, 'check_in');
+    final accessToken = _accessToken;
+    if (appointment.id == null || accessToken == null) return;
+    try {
+      final result = await _syncGateway.updateAppointmentStatus(
+        accessToken: accessToken,
+        appointmentId: appointment.id!,
+        status: 'checked_in',
+      );
+      appointment.status = result['status']?.toString() ?? 'checked_in';
+      appointment.checkInAt = DateTime.tryParse(
+        result['checkInAt']?.toString() ?? '',
+      )?.toLocal();
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(_appointmentErrorMessage(error));
+      return;
+    }
     if (!mounted) return;
-    setState(() => appointment.status = 'check_in');
+    setState(() {});
     _showProductMessage('Check-in registrado para este atendimento.');
+  }
+
+  Future<void> _cancelAppointment(Appointment appointment) async {
+    final accessToken = _accessToken;
+    if (appointment.id == null || accessToken == null) return;
+    try {
+      final result = await _syncGateway.updateAppointmentStatus(
+        accessToken: accessToken,
+        appointmentId: appointment.id!,
+        status: 'cancelled',
+      );
+      if (!mounted) return;
+      setState(
+        () => appointment.status = result['status']?.toString() ?? 'cancelled',
+      );
+      _showProductMessage('Atendimento cancelado.');
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(_appointmentErrorMessage(error));
+    }
   }
 
   Future<void> _openFamilyInvitation() async {
@@ -4008,13 +4211,17 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       setState(() => _showAuthGate = true);
       return;
     }
+    await _switchDatabaseForAccount(session.email);
     setState(() {
       _accessToken = session.accessToken;
       _showAuthGate = false;
       _showProfileChooser = true;
     });
+    await _restoreRemoteAccountData(session.accessToken);
     await _refreshAccountEntitlement();
     await _loadData();
+    await _loadRemoteAppointments();
+    await _synchronizePartnerProfile();
     unawaited(_syncPrivateVeterinaryContacts());
   }
 
@@ -4058,6 +4265,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
             : ProductCatalog.freeOffline.code,
         familyValidUntil: active ? validUntil : null,
         preserveFamilyValidUntil: false,
+        recordSyncOperation: false,
       );
       if (!mounted) return;
       setState(() {
@@ -4106,12 +4314,14 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     required SyncAuthSession session,
     String? name,
   }) async {
+    await _switchDatabaseForAccount(email);
     _accessToken = session.accessToken;
     await _sessionStore.save(
       email: email,
       accessToken: session.accessToken,
       refreshToken: session.refreshToken,
     );
+    await _restoreRemoteAccountData(session.accessToken);
     final existingProfile = await _database.loadProfile();
     await _database.saveProfile(
       name: name?.trim().isNotEmpty == true
@@ -4135,10 +4345,122 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     });
     await _loadData();
     await _refreshAccountEntitlement();
+    await _loadRemoteAppointments();
+    await _synchronizePartnerProfile();
     if (name != null && mounted) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_openAddressEditor());
       });
+    }
+  }
+
+  Future<void> _restoreRemoteAccountData(String accessToken) async {
+    try {
+      await SyncService(
+        _database,
+      ).pullLatest(gateway: _syncGateway, accessToken: accessToken);
+    } on SyncGatewayException {
+      // O login continua com os dados já disponíveis no aparelho.
+    }
+  }
+
+  Future<String> _submitPartnerRegistration(PartnerProfileDraft draft) async {
+    await _sessionStore.savePartnerDraft(_draftOwner, draft.toJson());
+    if (mounted) {
+      setState(() {
+        _partnerRegistrationPending = true;
+        _partnerVerificationStatus = 'pending';
+        _partnerProfileStatus = 'pending';
+      });
+    }
+    final accessToken = _accessToken;
+    if (accessToken == null || accessToken.isEmpty) {
+      return 'Cadastro salvo neste aparelho. Entre na conta para enviar à análise.';
+    }
+    try {
+      final response = await _syncGateway.submitPartnerProfile(
+        accessToken: accessToken,
+        profile: draft.toJson(),
+      );
+      await _sessionStore.savePartnerDraft(
+        _draftOwner,
+        draft.copyWith(submittedOnline: true).toJson(),
+      );
+      if (mounted) {
+        setState(() {
+          _partnerVerificationStatus =
+              response['verificationStatus']?.toString() ?? 'pending';
+          _partnerProfileStatus = response['status']?.toString() ?? 'pending';
+        });
+      }
+      return response['message']?.toString() ??
+          'Cadastro enviado para análise. O perfil ficará oculto até a aprovação.';
+    } on SyncGatewayException {
+      return 'Cadastro salvo localmente. Enviaremos para análise quando o servidor estiver disponível.';
+    }
+  }
+
+  Future<void> _synchronizePartnerProfile() async {
+    final accessToken = _accessToken;
+    if (accessToken == null || accessToken.isEmpty) return;
+    final rawDraft = await _sessionStore.readPartnerDraft(_draftOwner);
+    final draft = rawDraft == null
+        ? null
+        : PartnerProfileDraft.fromJson(rawDraft);
+    if (draft != null && !draft.submittedOnline) {
+      try {
+        await _syncGateway.submitPartnerProfile(
+          accessToken: accessToken,
+          profile: draft.toJson(),
+        );
+        await _sessionStore.savePartnerDraft(
+          _draftOwner,
+          draft.copyWith(submittedOnline: true).toJson(),
+        );
+      } on SyncGatewayException {
+        return;
+      }
+    }
+    try {
+      final response = await _syncGateway.loadPartnerProfile(
+        accessToken: accessToken,
+      );
+      final status = response['status']?.toString() ?? 'pending';
+      final verification =
+          response['verificationStatus']?.toString() ?? 'pending';
+      if (!mounted) return;
+      setState(() {
+        _partnerProfileStatus = status;
+        _partnerVerificationStatus = verification;
+        _partnerRegistrationPending =
+            !(status == 'active' && verification == 'approved');
+      });
+    } on SyncGatewayException {
+      // A conta cliente sem perfil parceiro é um estado esperado.
+    }
+  }
+
+  Future<String> _uploadPartnerDocument({
+    required String documentType,
+    required String fileName,
+    required String mimeType,
+    required List<int> bytes,
+  }) async {
+    final accessToken = _accessToken;
+    if (accessToken == null || accessToken.isEmpty) {
+      return 'Entre na conta para enviar documentos para auditoria.';
+    }
+    try {
+      await _syncGateway.uploadPartnerDocument(
+        accessToken: accessToken,
+        documentType: documentType,
+        fileName: fileName,
+        mimeType: mimeType,
+        bytes: bytes,
+      );
+      return 'Documento enviado para auditoria.';
+    } on SyncGatewayException catch (error) {
+      return error.message;
     }
   }
 
@@ -4361,8 +4683,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         SnackBar(
           content: Text(
             count == 0
-                ? 'Nenhuma alteracao pendente para sincronizar.'
-                : 'Sincroniza\u00E7\u00E3o conclu\u00EDda: $count operac\u00E3o(\u00F5es).',
+                ? 'Nenhuma alteração pendente para sincronizar.'
+                : count == 1
+                ? 'Sincronização concluída: 1 operação.'
+                : 'Sincronização concluída: $count operações.',
           ),
         ),
       );
@@ -4519,7 +4843,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       // A sessão local é removida mesmo se o token já estiver expirado.
     } finally {
       await _sessionStore.clear();
+      await _sessionStore.clearPartnerDraft(_draftOwner);
       _accessToken = null;
+      await _switchDatabaseForAccount(null);
+      await _loadData();
       await NotificationService.instance.scheduleFamilyExpiryWarning(
         validUntil: null,
       );
@@ -4648,8 +4975,12 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       return PartnerWorkspacePage(
         email: _profile.email,
         initialRegistrationPending: _partnerRegistrationPending,
-        onRegistrationSubmitted: () =>
-            setState(() => _partnerRegistrationPending = true),
+        verificationStatus: _partnerVerificationStatus,
+        profileStatus: _partnerProfileStatus,
+        onRegistrationSubmitted: _submitPartnerRegistration,
+        onUploadDocument: _uploadPartnerDocument,
+        onLoadAppointments: _loadPartnerAppointments,
+        onUpdateAppointmentStatus: _updatePartnerAppointment,
         onSwitchToClient: () => _selectAppMode(_AppMode.client),
         onLogout: _logout,
         onOpenDeveloper: _openDeveloperInfo,
@@ -4689,6 +5020,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         veterinaryContacts: _veterinaryContacts,
         onSchedule: _openScheduleAppointment,
         onCheckIn: _checkInAppointment,
+        onCancelAppointment: _cancelAppointment,
+        onRefreshAppointments: _loadRemoteAppointments,
         onAddVeterinaryContact: _openAddVeterinaryContact,
         onDeleteVeterinaryContact: _deleteVeterinaryContact,
         onLoadPartners: _loadRemotePartners,
@@ -4898,7 +5231,12 @@ class PartnerWorkspacePage extends StatefulWidget {
     super.key,
     required this.email,
     this.initialRegistrationPending = false,
+    this.verificationStatus = 'not_submitted',
+    this.profileStatus = 'pending',
     required this.onRegistrationSubmitted,
+    this.onUploadDocument,
+    this.onLoadAppointments,
+    this.onUpdateAppointmentStatus,
     required this.onSwitchToClient,
     required this.onLogout,
     required this.onOpenDeveloper,
@@ -4908,7 +5246,19 @@ class PartnerWorkspacePage extends StatefulWidget {
 
   final String email;
   final bool initialRegistrationPending;
-  final VoidCallback onRegistrationSubmitted;
+  final String verificationStatus;
+  final String profileStatus;
+  final dynamic onRegistrationSubmitted;
+  final Future<String> Function({
+    required String documentType,
+    required String fileName,
+    required String mimeType,
+    required List<int> bytes,
+  })?
+  onUploadDocument;
+  final Future<List<Appointment>> Function()? onLoadAppointments;
+  final Future<String> Function(Appointment appointment, String status)?
+  onUpdateAppointmentStatus;
   final VoidCallback onSwitchToClient;
   final Future<void> Function() onLogout;
   final VoidCallback onOpenDeveloper;
@@ -4921,7 +5271,36 @@ class PartnerWorkspacePage extends StatefulWidget {
 
 class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
   int _selectedIndex = 0;
+  List<Appointment> _appointments = [];
+  bool _loadingAppointments = false;
+  String? _appointmentsError;
   late bool _registrationPending = widget.initialRegistrationPending;
+  late String _verificationStatus = widget.verificationStatus;
+  late String _profileStatus = widget.profileStatus;
+
+  bool get _partnerApproved =>
+      _profileStatus == 'active' && _verificationStatus == 'approved';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_refreshAppointments());
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant PartnerWorkspacePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialRegistrationPending !=
+            widget.initialRegistrationPending ||
+        oldWidget.verificationStatus != widget.verificationStatus ||
+        oldWidget.profileStatus != widget.profileStatus) {
+      _registrationPending = widget.initialRegistrationPending;
+      _verificationStatus = widget.verificationStatus;
+      _profileStatus = widget.profileStatus;
+    }
+  }
 
   Future<void> _openPartnerRegistration() async {
     final name = TextEditingController();
@@ -5044,14 +5423,79 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
     address.dispose();
     if (submitted != true || !mounted) return;
     setState(() => _registrationPending = true);
-    widget.onRegistrationSubmitted();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Cadastro enviado. O perfil permanecerá oculto até a verificação.',
-        ),
-      ),
+    final digits = document.text.replaceAll(RegExp(r'\D'), '');
+    final draft = PartnerProfileDraft(
+      businessName: name.text,
+      partnerType: 'clinic',
+      document: document.text,
+      documentType: digits.length == 11 ? 'cpf' : 'cnpj',
+      responsibleName: responsible.text,
+      responsibleCpf: '',
+      crmvUf: '',
+      crmvNumber: crmv.text,
+      artNumber: '',
+      phone: phone.text,
+      whatsapp: phone.text,
+      address: address.text,
+      postalCode: '',
+      city: '',
+      state: '',
+      latitude: null,
+      longitude: null,
+      services: const [],
+      acceptsUrgency: false,
+      termsAccepted: true,
     );
+    final messenger = ScaffoldMessenger.of(context);
+    final result =
+        widget.onRegistrationSubmitted
+            is Future<String> Function(PartnerProfileDraft)
+        ? await widget.onRegistrationSubmitted(draft)
+        : await widget.onRegistrationSubmitted();
+    final message = result is String
+        ? result
+        : 'Cadastro enviado para análise. O perfil permanecerá oculto até a verificação.';
+    messenger.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _refreshAppointments() async {
+    final loader = widget.onLoadAppointments;
+    if (loader == null || _loadingAppointments) return;
+    setState(() {
+      _loadingAppointments = true;
+      _appointmentsError = null;
+    });
+    try {
+      final appointments = await loader();
+      if (!mounted) return;
+      setState(() => _appointments = appointments);
+    } on SyncGatewayException catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _appointmentsError = switch (error.statusCode) {
+          404 => 'A agenda não foi encontrada para este perfil.',
+          409 => error.message,
+          429 => 'Muitas atualizações. Aguarde um instante e tente novamente.',
+          _ => error.message,
+        };
+      });
+    } finally {
+      if (mounted) setState(() => _loadingAppointments = false);
+    }
+  }
+
+  Future<void> _changeAppointmentStatus(
+    Appointment appointment,
+    String status,
+  ) async {
+    final updater = widget.onUpdateAppointmentStatus;
+    if (updater == null) return;
+    final message = await updater(appointment, status);
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+    await _refreshAppointments();
   }
 
   @override
@@ -5060,7 +5504,7 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
     return Scaffold(
       backgroundColor: _paper,
       appBar: AppBar(
-        title: const Text('AuMiau Parceiro(s)'),
+        title: const Text('AuMiau Parceiro'),
         actions: [
           IconButton(
             tooltip: 'Trocar para Cliente',
@@ -5084,8 +5528,10 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) =>
-            setState(() => _selectedIndex = index),
+        onDestinationSelected: (index) {
+          setState(() => _selectedIndex = index);
+          if (index == 1) unawaited(_refreshAppointments());
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.dashboard_outlined),
@@ -5107,6 +5553,59 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
     );
   }
 
+  Future<void> _openDocumentUpload() async {
+    final documentType = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Tipo de documento'),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Selecione o tipo que será enviado para análise.'),
+            SizedBox(height: 12),
+            _DocumentTypeOption(
+              value: 'documento_responsavel',
+              label: 'Documento de identidade do responsável',
+            ),
+            _DocumentTypeOption(
+              value: 'documento_fiscal',
+              label: 'CPF/CNPJ ou comprovante fiscal',
+            ),
+            _DocumentTypeOption(
+              value: 'registro_crmv',
+              label: 'Registro profissional no CRMV',
+            ),
+          ],
+        ),
+      ),
+    );
+    if (documentType == null || !mounted) return;
+    final selection = await FilePicker.pickFiles(withData: true);
+    if (selection == null || selection.files.isEmpty || !mounted) return;
+    final file = selection.files.single;
+    final bytes = file.bytes;
+    if (bytes == null || bytes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível ler o arquivo selecionado.'),
+        ),
+      );
+      return;
+    }
+    final handler = widget.onUploadDocument;
+    if (handler == null) return;
+    final message = await handler(
+      documentType: documentType,
+      fileName: file.name,
+      mimeType: 'application/octet-stream',
+      bytes: bytes,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Widget _buildHome() => ListView(
     padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
     children: [
@@ -5120,8 +5619,25 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
       const SizedBox(height: 4),
       Text(widget.email, style: const TextStyle(color: _muted)),
       const SizedBox(height: 18),
+      if (_partnerApproved)
+        const Card(
+          color: Color(0xFFE7F5EA),
+          child: ListTile(
+            leading: Icon(Icons.verified, color: _success),
+            title: Text(
+              'PERFIL APROVADO',
+              style: TextStyle(fontWeight: FontWeight.w900),
+            ),
+            subtitle: Text(
+              'Seu estabelecimento poderá aparecer para clientes após a ativação da assinatura.',
+            ),
+          ),
+        ),
+      if (_partnerApproved) const SizedBox(height: 12),
       Card(
-        color: _registrationPending ? const Color(0xFFFFF6DF) : _forest,
+        color: _partnerApproved
+            ? const Color(0xFFE7F5EA)
+            : (_registrationPending ? const Color(0xFFFFF6DF) : _forest),
         child: Padding(
           padding: const EdgeInsets.all(18),
           child: Column(
@@ -5132,7 +5648,9 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
                     ? 'CADASTRO EM ANÁLISE'
                     : 'CONTA DE PARCEIRO NECESSÁRIA',
                 style: TextStyle(
-                  color: _registrationPending ? _forestDark : _mango,
+                  color: _partnerApproved || _registrationPending
+                      ? _forestDark
+                      : _mango,
                   fontWeight: FontWeight.w900,
                   letterSpacing: .5,
                 ),
@@ -5143,7 +5661,9 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
                     ? 'Seu perfil ficará oculto para clientes até a conferência dos documentos.'
                     : 'Complete o cadastro profissional para publicar serviços e atender clientes.',
                 style: TextStyle(
-                  color: _registrationPending ? _ink : Colors.white,
+                  color: _partnerApproved || _registrationPending
+                      ? _ink
+                      : Colors.white,
                   height: 1.4,
                 ),
               ),
@@ -5152,7 +5672,7 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
         ),
       ),
       const SizedBox(height: 16),
-      if (!_registrationPending)
+      if (!_registrationPending && !_partnerApproved)
         FilledButton.icon(
           onPressed: _openPartnerRegistration,
           icon: const Icon(Icons.assignment_ind_outlined),
@@ -5175,40 +5695,150 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
     ],
   );
 
-  Widget _buildAgenda() => ListView(
-    padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-    children: [
-      Text(
-        'Agenda e solicitações',
-        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-          color: _ink,
-          fontWeight: FontWeight.w800,
+  Widget _buildAgenda() => RefreshIndicator(
+    onRefresh: _refreshAppointments,
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Agenda e solicitações',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: _ink,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Atualizar agenda',
+              onPressed: _loadingAppointments ? null : _refreshAppointments,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
         ),
-      ),
-      const SizedBox(height: 16),
-      Card(
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Nenhuma solicitação carregada',
-                style: TextStyle(fontWeight: FontWeight.w800, color: _ink),
+        if (_loadingAppointments) ...[
+          const SizedBox(height: 12),
+          const LinearProgressIndicator(),
+        ],
+        if (_appointmentsError != null) ...[
+          const SizedBox(height: 12),
+          Card(
+            color: const Color(0xFFFFE8E8),
+            child: ListTile(
+              leading: const Icon(Icons.error_outline, color: _danger),
+              title: Text(_appointmentsError!),
+              trailing: TextButton(
+                onPressed: _refreshAppointments,
+                child: const Text('Tentar novamente'),
               ),
-              const SizedBox(height: 6),
-              Text(
-                _registrationPending
-                    ? 'A agenda será publicada quando o cadastro for aprovado.'
-                    : 'Conclua o cadastro para receber solicitações de atendimento.',
-                style: const TextStyle(color: _muted),
-              ),
-            ],
+            ),
           ),
+        ],
+        const SizedBox(height: 16),
+        if (!_loadingAppointments && _appointments.isEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Nenhuma solicitação recebida',
+                    style: TextStyle(fontWeight: FontWeight.w800, color: _ink),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    _partnerApproved
+                        ? 'Novos pedidos de clientes aparecerão aqui.'
+                        : 'A agenda será liberada quando o cadastro e a assinatura estiverem ativos.',
+                    style: const TextStyle(color: _muted),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ..._appointments.map(_partnerAppointmentCard),
+      ],
+    ),
+  );
+
+  Widget _partnerAppointmentCard(Appointment appointment) {
+    final actions = <Widget>[];
+    if (appointment.status == 'requested') {
+      actions.addAll([
+        FilledButton(
+          onPressed: () => _changeAppointmentStatus(appointment, 'confirmed'),
+          child: const Text('Confirmar'),
+        ),
+        OutlinedButton(
+          onPressed: () => _changeAppointmentStatus(appointment, 'cancelled'),
+          child: const Text('Cancelar'),
+        ),
+      ]);
+    } else if (appointment.status == 'confirmed') {
+      actions.addAll([
+        FilledButton(
+          onPressed: () => _changeAppointmentStatus(appointment, 'completed'),
+          child: const Text('Concluir'),
+        ),
+        OutlinedButton(
+          onPressed: () => _changeAppointmentStatus(appointment, 'cancelled'),
+          child: const Text('Cancelar'),
+        ),
+      ]);
+    } else if (appointment.status == 'checked_in') {
+      actions.add(
+        FilledButton(
+          onPressed: () => _changeAppointmentStatus(appointment, 'completed'),
+          child: const Text('Concluir atendimento'),
+        ),
+      );
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    appointment.service,
+                    style: const TextStyle(
+                      color: _ink,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                Chip(label: Text(_appointmentStatusLabel(appointment.status))),
+              ],
+            ),
+            Text(
+              '${appointment.petName ?? 'Pet'} · ${appointment.clientName ?? appointment.clientEmail ?? 'Cliente'}',
+              style: const TextStyle(color: _ink),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _formatAppointmentDateTime(appointment.scheduledAt),
+              style: const TextStyle(color: _muted),
+            ),
+            if (appointment.notes?.trim().isNotEmpty == true) ...[
+              const SizedBox(height: 8),
+              Text(appointment.notes!, style: const TextStyle(color: _muted)),
+            ],
+            if (actions.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Wrap(spacing: 8, runSpacing: 8, children: actions),
+            ],
+          ],
         ),
       ),
-    ],
-  );
+    );
+  }
 
   Widget _buildProfile() => ListView(
     padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
@@ -5241,6 +5871,12 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
         'C.A. Informática • AuMiau',
         widget.onOpenDeveloper,
       ),
+      const SizedBox(height: 10),
+      OutlinedButton.icon(
+        onPressed: _openDocumentUpload,
+        icon: const Icon(Icons.upload_file_outlined),
+        label: const Text('Enviar documento para auditoria'),
+      ),
       const SizedBox(height: 18),
       OutlinedButton.icon(
         onPressed: widget.onSwitchToClient,
@@ -5263,6 +5899,21 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
       subtitle: Text(subtitle),
       trailing: const Icon(Icons.chevron_right),
     ),
+  );
+}
+
+class _DocumentTypeOption extends StatelessWidget {
+  const _DocumentTypeOption({required this.value, required this.label});
+
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    contentPadding: EdgeInsets.zero,
+    leading: const Icon(Icons.description_outlined),
+    title: Text(label),
+    onTap: () => Navigator.of(context).pop(value),
   );
 }
 
@@ -6454,9 +7105,9 @@ class PetsPage extends StatelessWidget {
         const SizedBox(height: 26),
         const _InfoBanner(
           icon: Icons.lock_outline,
-          title: 'Seus dados ficam com você',
+          title: 'Seus dados ficam protegidos',
           text:
-              'Nesta primeira versão, o núcleo funciona localmente. A sincronização segura será conectada na próxima etapa.',
+              'O AuMiau funciona offline e sincroniza seus pets com segurança quando sua conta está conectada.',
         ),
       ],
     );
@@ -6894,6 +7545,8 @@ class PartnerDirectoryPage extends StatefulWidget {
     this.veterinaryContacts = const [],
     this.onSchedule,
     this.onCheckIn,
+    this.onCancelAppointment,
+    this.onRefreshAppointments,
     this.onAddVeterinaryContact,
     this.onDeleteVeterinaryContact,
     this.onLoadPartners,
@@ -6903,6 +7556,8 @@ class PartnerDirectoryPage extends StatefulWidget {
   final List<PrivateVeterinaryContact> veterinaryContacts;
   final Future<void> Function(PartnerClinic partner)? onSchedule;
   final Future<void> Function(Appointment appointment)? onCheckIn;
+  final Future<void> Function(Appointment appointment)? onCancelAppointment;
+  final Future<void> Function()? onRefreshAppointments;
   final VoidCallback? onAddVeterinaryContact;
   final Future<void> Function(PrivateVeterinaryContact contact)?
   onDeleteVeterinaryContact;
@@ -7183,41 +7838,96 @@ class _PartnerDirectoryPageState extends State<PartnerDirectoryPage> {
             ),
           ),
         const SizedBox(height: 14),
-        if (widget.appointments.isNotEmpty) ...[
-          Text(
-            'Meus atendimentos',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              color: _ink,
-              fontWeight: FontWeight.w800,
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Meus atendimentos',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: _ink,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
+            IconButton(
+              tooltip: 'Atualizar atendimentos',
+              onPressed: widget.onRefreshAppointments,
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (widget.appointments.isEmpty)
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.event_busy_outlined),
+              title: Text('Nenhum atendimento solicitado'),
+              subtitle: Text('Escolha um parceiro abaixo para agendar.'),
+            ),
+          )
+        else ...[
           ...widget.appointments
               .take(3)
               .map(
                 (appointment) => Card(
-                  child: ListTile(
-                    leading: const Icon(
-                      Icons.event_available_outlined,
-                      color: _forest,
-                    ),
-                    title: Text(appointment.service),
-                    subtitle: Text(
-                      '${appointment.partnerName} · ${_formatFullDate(appointment.scheduledAt)} · ${appointment.status == 'check_in' ? 'Check-in realizado' : 'Agendado'}',
-                    ),
-                    trailing: appointment.status == 'check_in'
-                        ? const Icon(Icons.check_circle, color: _forest)
-                        : TextButton(
-                            onPressed: widget.onCheckIn == null
-                                ? null
-                                : () => widget.onCheckIn!(appointment),
-                            child: const Text('Check-in'),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(
+                            Icons.event_available_outlined,
+                            color: _forest,
                           ),
+                          title: Text(appointment.service),
+                          subtitle: Text(
+                            '${appointment.partnerName} · ${_formatAppointmentDateTime(appointment.scheduledAt)}',
+                          ),
+                          trailing: Chip(
+                            label: Text(
+                              _appointmentStatusLabel(appointment.status),
+                            ),
+                          ),
+                        ),
+                        if (appointment.status == 'confirmed')
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              FilledButton.icon(
+                                onPressed: widget.onCheckIn == null
+                                    ? null
+                                    : () => widget.onCheckIn!(appointment),
+                                icon: const Icon(Icons.how_to_reg_outlined),
+                                label: const Text('Fazer check-in'),
+                              ),
+                              OutlinedButton(
+                                onPressed: widget.onCancelAppointment == null
+                                    ? null
+                                    : () => widget.onCancelAppointment!(
+                                        appointment,
+                                      ),
+                                child: const Text('Cancelar'),
+                              ),
+                            ],
+                          )
+                        else if (appointment.status == 'requested')
+                          OutlinedButton(
+                            onPressed: widget.onCancelAppointment == null
+                                ? null
+                                : () =>
+                                      widget.onCancelAppointment!(appointment),
+                            child: const Text('Cancelar solicitação'),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-          const SizedBox(height: 14),
         ],
+        const SizedBox(height: 14),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -7921,7 +8631,9 @@ class ProfilePage extends StatelessWidget {
                       child: Text(
                         pendingSyncCount == 0
                             ? 'Nenhuma alteração pendente. Sincronização com a nuvem disponível.'
-                            : '$pendingSyncCount alteração${pendingSyncCount == 1 ? '' : 'ões'} aguardando sincronização.',
+                            : pendingSyncCount == 1
+                            ? '1 alteração aguardando sincronização.'
+                            : '$pendingSyncCount alterações aguardando sincronização.',
                         style: Theme.of(
                           context,
                         ).textTheme.bodySmall?.copyWith(color: _muted),
@@ -8806,6 +9518,11 @@ String _formatDate(DateTime date) =>
 String _formatFullDate(DateTime date) =>
     '${date.day.toString().padLeft(2, '0')}/'
     '${date.month.toString().padLeft(2, '0')}/${date.year}';
+
+String _formatAppointmentDateTime(DateTime date) =>
+    '${_formatFullDate(date)} às '
+    '${date.hour.toString().padLeft(2, '0')}:'
+    '${date.minute.toString().padLeft(2, '0')}';
 
 String _formatLongDate(DateTime date) {
   const weekdays = [

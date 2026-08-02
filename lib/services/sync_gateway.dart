@@ -34,10 +34,34 @@ class RegistrationResult {
 }
 
 class SyncBatchAck {
-  const SyncBatchAck({required this.acknowledgedOperationIds, this.serverTime});
+  const SyncBatchAck({
+    required this.acknowledgedOperationIds,
+    required this.revision,
+    this.serverTime,
+  });
 
   final List<int> acknowledgedOperationIds;
+  final int revision;
   final DateTime? serverTime;
+}
+
+class RemoteSnapshot {
+  const RemoteSnapshot({required this.snapshot, required this.revision});
+
+  final Map<String, dynamic>? snapshot;
+  final int revision;
+}
+
+class EntitySyncAck {
+  const EntitySyncAck({
+    required this.operationId,
+    required this.entityId,
+    required this.version,
+  });
+
+  final int operationId;
+  final String entityId;
+  final int version;
 }
 
 class SyncGatewayException implements Exception {
@@ -84,6 +108,18 @@ abstract interface class SyncGateway {
 
   Future<SyncBatchAck> pushBatch({
     required Map<String, dynamic> payload,
+    required String accessToken,
+  });
+
+  Future<RemoteSnapshot> pullSnapshot({required String accessToken});
+
+  Future<List<EntitySyncAck>> pushEntities({
+    required List<Map<String, dynamic>> changes,
+    required String accessToken,
+  });
+
+  Future<List<Map<String, dynamic>>> pullEntities({
+    required String entityType,
     required String accessToken,
   });
 }
@@ -192,6 +228,122 @@ class HttpSyncGateway implements SyncGateway {
   Future<void> logout({required String accessToken}) async {
     await _post('auth/logout', body: const {}, accessToken: accessToken);
   }
+
+  Future<Map<String, dynamic>> submitPartnerProfile({
+    required String accessToken,
+    required Map<String, dynamic> profile,
+  }) async {
+    final data = _decodeObject(
+      await _post(
+        'partner/profile/request',
+        body: profile,
+        accessToken: accessToken,
+      ),
+    );
+    return data;
+  }
+
+  Future<Map<String, dynamic>> loadPartnerProfile({
+    required String accessToken,
+  }) async {
+    return _decodeObject(
+      await _get('partner/profile', accessToken: accessToken),
+    );
+  }
+
+  Future<Map<String, dynamic>> loadPartnerDocuments({
+    required String accessToken,
+  }) async {
+    return _decodeObject(
+      await _get('partner/documents', accessToken: accessToken),
+    );
+  }
+
+  Future<Map<String, dynamic>> uploadPartnerDocument({
+    required String accessToken,
+    required String documentType,
+    required String fileName,
+    required String mimeType,
+    required List<int> bytes,
+  }) async {
+    return _decodeObject(
+      await _post(
+        'partner/documents',
+        accessToken: accessToken,
+        body: {
+          'documentType': documentType,
+          'fileName': fileName,
+          'mimeType': mimeType,
+          'contentBase64': base64Encode(bytes),
+        },
+      ),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> loadAppointments({
+    required String accessToken,
+  }) async {
+    final data = _decodeObject(
+      await _get('appointments', accessToken: accessToken),
+    );
+    return _decodeObjectList(data['appointments']);
+  }
+
+  Future<Map<String, dynamic>> createAppointment({
+    required String accessToken,
+    required int partnerId,
+    required String petId,
+    required String petName,
+    required String service,
+    required DateTime scheduledAt,
+    String notes = '',
+  }) async => _decodeObject(
+    await _post(
+      'appointments',
+      accessToken: accessToken,
+      body: {
+        'partnerId': partnerId,
+        'petId': petId,
+        'petName': petName,
+        'service': service,
+        'scheduledAt': scheduledAt.toUtc().toIso8601String(),
+        'notes': notes,
+      },
+    ),
+  );
+
+  Future<Map<String, dynamic>> updateAppointmentStatus({
+    required String accessToken,
+    required int appointmentId,
+    required String status,
+  }) async => _decodeObject(
+    await _patch(
+      'appointments/$appointmentId/status',
+      accessToken: accessToken,
+      body: {'status': status},
+    ),
+  );
+
+  Future<List<Map<String, dynamic>>> loadPartnerAppointments({
+    required String accessToken,
+  }) async {
+    final data = _decodeObject(
+      await _get('partner/appointments', accessToken: accessToken),
+    );
+    return _decodeObjectList(data['appointments']);
+  }
+
+  Future<Map<String, dynamic>> updatePartnerAppointmentStatus({
+    required String accessToken,
+    required int appointmentId,
+    required String status,
+  }) async => _decodeObject(
+    await _patch(
+      'partner/appointments/$appointmentId/status',
+      accessToken: accessToken,
+      body: {'status': status},
+    ),
+  );
 
   Future<Map<String, dynamic>> loadAccountStatus({
     required String accessToken,
@@ -338,10 +490,71 @@ class HttpSyncGateway implements SyncGateway {
           .whereType<num>()
           .map((id) => id.toInt())
           .toList(),
+      revision: data['revision'] is num
+          ? (data['revision'] as num).toInt()
+          : throw const SyncGatewayException(
+              'Resposta de sincronização sem revisão.',
+            ),
       serverTime: data['serverTime'] is String
           ? DateTime.tryParse(data['serverTime'] as String)
           : null,
     );
+  }
+
+  @override
+  Future<RemoteSnapshot> pullSnapshot({required String accessToken}) async {
+    final data = _decodeObject(
+      await _get('sync/snapshot', accessToken: accessToken),
+    );
+    final revision = data['revision'];
+    if (revision is! num) {
+      throw const SyncGatewayException(
+        'Resposta de sincronização sem revisão.',
+      );
+    }
+    final snapshot = data['snapshot'];
+    return RemoteSnapshot(
+      snapshot: snapshot is Map ? Map<String, dynamic>.from(snapshot) : null,
+      revision: revision.toInt(),
+    );
+  }
+
+  @override
+  Future<List<EntitySyncAck>> pushEntities({
+    required List<Map<String, dynamic>> changes,
+    required String accessToken,
+  }) async {
+    final data = _decodeObject(
+      await _post(
+        'sync/entities',
+        body: {'changes': changes},
+        accessToken: accessToken,
+      ),
+    );
+    return _decodeObjectList(data['acknowledged'])
+        .map(
+          (item) => EntitySyncAck(
+            operationId: (item['operationId'] as num).toInt(),
+            entityId: item['entityId'].toString(),
+            version: (item['version'] as num).toInt(),
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> pullEntities({
+    required String entityType,
+    required String accessToken,
+  }) async {
+    final uri = Uri(
+      path: 'sync/entities',
+      queryParameters: {'entityType': entityType},
+    );
+    final data = _decodeObject(
+      await _get(uri.toString(), accessToken: accessToken),
+    );
+    return _decodeObjectList(data['entities']);
   }
 
   SyncAuthSession _decodeSession(http.Response response) {
@@ -454,6 +667,46 @@ class HttpSyncGateway implements SyncGateway {
     } catch (error) {
       throw SyncGatewayException('Falha de comunicação com o servidor: $error');
     }
+  }
+
+  Future<http.Response> _patch(
+    String path, {
+    required Map<String, dynamic> body,
+    String? accessToken,
+  }) async {
+    final headers = <String, String>{
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+    };
+    try {
+      final response = await _client
+          .patch(
+            baseUri.resolve(path),
+            headers: headers,
+            body: jsonEncode(body),
+          )
+          .timeout(timeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw SyncGatewayException(
+          _errorMessage(response),
+          statusCode: response.statusCode,
+        );
+      }
+      return response;
+    } on SyncGatewayException {
+      rethrow;
+    } catch (error) {
+      throw SyncGatewayException('Falha de comunicação com o servidor: $error');
+    }
+  }
+
+  List<Map<String, dynamic>> _decodeObjectList(Object? value) {
+    if (value is! List) return const [];
+    return value
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
   }
 
   Map<String, dynamic> _decodeObject(http.Response response) {

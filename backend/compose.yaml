@@ -29,6 +29,7 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:?defina SMTP_PASSWORD}
       SMTP_FROM: ${SMTP_FROM:-suporte@aumiau.app.br}
       AUMIAU_WEB_URL: ${AUMIAU_WEB_URL:-https://aumiau.app.br}
+      PARTNER_DOCUMENTS_DIR: /data/partner-documents
       EMAIL_VERIFICATION_TTL_HOURS: ${EMAIL_VERIFICATION_TTL_HOURS:-24}
       REQUIRE_EMAIL_VERIFICATION: ${REQUIRE_EMAIL_VERIFICATION:-true}
       MERCADOPAGO_ACCESS_TOKEN: ${MERCADOPAGO_ACCESS_TOKEN:-}
@@ -41,6 +42,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - partner_documents:/data/partner-documents
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
@@ -68,3 +71,4 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  partner_documents:
