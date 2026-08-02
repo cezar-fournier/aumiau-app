@@ -6211,7 +6211,7 @@ class _AuthWelcomeView extends StatelessWidget {
     return _AuthCard(
       children: [
         const SizedBox(height: 18),
-        const _AuthBrand(showTagline: true),
+        const _AuthBrand(showTagline: true, showBeta: true),
         const SizedBox(height: 30),
         const Text(
           'Cuide de quem ama',
@@ -6813,9 +6813,10 @@ class _AuthCard extends StatelessWidget {
 }
 
 class _AuthBrand extends StatelessWidget {
-  const _AuthBrand({this.showTagline = false});
+  const _AuthBrand({this.showTagline = false, this.showBeta = false});
 
   final bool showTagline;
+  final bool showBeta;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -6833,14 +6834,45 @@ class _AuthBrand extends StatelessWidget {
       ),
       const SizedBox(height: 4),
       if (showTagline)
-        const Text(
-          'CUIDADO COM CARINHO',
-          style: TextStyle(
-            color: _muted,
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 1.5,
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'CUIDADO COM CARINHO',
+              style: TextStyle(
+                color: _muted,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.5,
+              ),
+            ),
+            if (showBeta) ...[
+              const SizedBox(width: 10),
+              Semantics(
+                label: 'Versão beta para testes',
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0x1FFF8A00),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: const Color(0x66FF8A00)),
+                  ),
+                  child: const Text(
+                    'BETA',
+                    style: TextStyle(
+                      color: Color(0xFF9A4D00),
+                      fontSize: 9,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
     ],
   );

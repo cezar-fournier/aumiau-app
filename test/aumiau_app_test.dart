@@ -846,6 +846,7 @@ void main() {
 
     expect(find.text('Dados protegidos'), findsOneWidget);
     expect(find.text('C.A. Informática'), findsOneWidget);
+    expect(find.text('BETA'), findsOneWidget);
     await tester.ensureVisible(find.text('Dados protegidos'));
     await tester.tap(find.text('Dados protegidos'));
     await tester.pumpAndSettle();
