@@ -6226,7 +6226,6 @@ Future<void> _showLanguagePicker(BuildContext context) async {
                     RadioListTile<Locale>(
                       value: option.locale,
                       title: Text(option.label),
-                      secondary: const Icon(Icons.translate, color: _forest),
                       activeColor: _forest,
                     ),
                 ],
