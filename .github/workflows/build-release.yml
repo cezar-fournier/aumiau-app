@@ -115,6 +115,8 @@ jobs:
             "build/app/outputs/bundle/release/aumiau-${GITHUB_REF_NAME}.aab"
           cp build/app/outputs/flutter-apk/app-release.apk \
             "build/app/outputs/flutter-apk/aumiau-${GITHUB_REF_NAME}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            "build/app/outputs/flutter-apk/aumiau-latest.apk"
 
       - name: Generate release SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -132,6 +134,7 @@ jobs:
           path: |
             build/app/outputs/bundle/release/aumiau-${{ github.ref_name }}.aab
             build/app/outputs/flutter-apk/aumiau-${{ github.ref_name }}.apk
+            build/app/outputs/flutter-apk/aumiau-latest.apk
             build/aumiau-${{ github.ref_name }}.spdx.json
           if-no-files-found: error
 
@@ -143,6 +146,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             "build/app/outputs/bundle/release/aumiau-${GITHUB_REF_NAME}.aab" \
             "build/app/outputs/flutter-apk/aumiau-${GITHUB_REF_NAME}.apk" \
+            "build/app/outputs/flutter-apk/aumiau-latest.apk" \
             "build/aumiau-${GITHUB_REF_NAME}.spdx.json" \
             --title "AuMiau $GITHUB_REF_NAME" \
             --generate-notes
