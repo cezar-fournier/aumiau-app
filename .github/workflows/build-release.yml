@@ -97,7 +97,11 @@ jobs:
           if [[ "$version" == "$GITHUB_REF_NAME" ]]; then
             version="0.1.0"
           fi
-          build_number="${GITHUB_RUN_NUMBER}"
+          build_number="$(sed -n 's/^version: .*+//p' pubspec.yaml)"
+          if [[ ! "$build_number" =~ ^[0-9]+$ ]]; then
+            echo "Código de versão Android inválido no pubspec.yaml: $build_number" >&2
+            exit 1
+          fi
           common_args=(
             "--release"
             "--build-name=$version"
