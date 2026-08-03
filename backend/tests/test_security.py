@@ -19,6 +19,8 @@ def test_sensitive_routes_have_explicit_policy() -> None:
     assert rate_limit_for("/auth/password-reset/request") == (5, 300)
     assert rate_limit_for("/auth/mfa/verify") == (10, 300)
     assert rate_limit_for("/partner/documents/42/content") == (60, 60)
+    assert rate_limit_for("/partner/prescriptions/42/prepare") == (60, 60)
+    assert rate_limit_for("/prescriptions/42/content") == (120, 60)
     assert rate_limit_for("/admin/partner-documents/42/content") == (120, 60)
     assert rate_limit_for("/appointments/42/status") == (60, 60)
     assert rate_limit_for("/partner/appointments/42/status") == (60, 60)

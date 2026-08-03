@@ -19,6 +19,26 @@ do banco local do celular.
 Os endpoints de família e atendimento exigem entitlement `family_access` ativo.
 A localização só é filtrada quando o usuário fornece latitude e longitude; o backend não coleta localização continuamente.
 
+## Receituário veterinário preparatório
+
+O módulo fica disponível somente para atendimentos concluídos e parceiros com
+responsável técnico aprovado. Nesta etapa, o sistema gera apenas PDF de
+receituário comum, sempre marcado como
+`RASCUNHO — SEM VALIDADE PARA DISPENSAÇÃO`.
+
+- `POST /partner/prescriptions`: cria o rascunho vinculado ao atendimento.
+- `POST /partner/prescriptions/{id}/prepare`: gera o PDF e o QR de verificação.
+- `GET /partner/prescriptions`: lista documentos do parceiro proprietário.
+- `POST /partner/prescriptions/{id}/cancel`: cancela sem apagar o histórico.
+- `GET /prescriptions`: lista documentos disponibilizados ao tutor.
+- `GET /prescriptions/{id}/content`: entrega o PDF ao tutor proprietário.
+- `GET /prescriptions/verify/{public_id}?token=...`: consulta pública mínima.
+
+Antimicrobianos, receitas de controle especial e notificações controladas são
+bloqueados antes da preparação. O estado `signed` existe para a futura
+integração com assinatura eletrônica, mas não há endpoint que permita marcá-lo
+sem a validação criptográfica de um provedor autorizado.
+
 Backend inicial do contrato de sincronização v1 do aplicativo.
 
 ## Serviços

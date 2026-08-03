@@ -4,6 +4,7 @@ import base64
 import os
 import hashlib
 import hmac
+import html
 import json
 import math
 import secrets
@@ -20,7 +21,7 @@ import bcrypt
 import jwt
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from app.admin_panel import ADMIN_HTML
@@ -52,6 +53,17 @@ from app.play_billing import (
     GooglePlayConfigurationError,
     GooglePlayVerificationError,
 )
+from app.prescription_pdf import generate_prescription_pdf
+from app.prescription_security import (
+    InvalidPrescription,
+    ensure_type_can_be_prepared,
+    normalize_prescription_type,
+    public_validity,
+    validate_crmv,
+    validate_items,
+    verification_token_hash,
+    verify_token,
+)
 from app.security import InMemoryRateLimiter, rate_limit_for
 
 
@@ -82,6 +94,10 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME).strip()
 AUMIAU_WEB_URL = os.getenv("AUMIAU_WEB_URL", "https://aumiau.app.br").rstrip("/")
 PARTNER_DOCUMENTS_DIR = os.getenv("PARTNER_DOCUMENTS_DIR", "/data/partner-documents")
+PRESCRIPTIONS_DIR = os.getenv(
+    "PRESCRIPTIONS_DIR",
+    os.path.join(PARTNER_DOCUMENTS_DIR, "prescriptions"),
+)
 METRICS_TOKEN = os.getenv("METRICS_TOKEN", "").strip()
 GOOGLE_PLAY_PACKAGE_NAME = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.aumiau.aumiau_app").strip()
 GOOGLE_PLAY_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE", "").strip()
@@ -260,6 +276,34 @@ class AppointmentRequest(BaseModel):
 
 class AppointmentStatusRequest(BaseModel):
     status: str = Field(min_length=3, max_length=30)
+
+
+class PrescriptionMedicationRequest(BaseModel):
+    medication: str = Field(min_length=1, max_length=240)
+    concentration: str = Field(min_length=1, max_length=120)
+    form: str = Field(min_length=1, max_length=120)
+    quantity: str = Field(min_length=1, max_length=120)
+    dose: str = Field(min_length=1, max_length=160)
+    route: str = Field(min_length=1, max_length=120)
+    frequency: str = Field(min_length=1, max_length=160)
+    duration: str = Field(min_length=1, max_length=160)
+    notes: str = Field(default="", max_length=240)
+
+
+class PrescriptionCreateRequest(BaseModel):
+    appointmentId: int = Field(gt=0)
+    prescriptionType: str = Field(default="common", max_length=40)
+    patientSpecies: str = Field(min_length=2, max_length=80)
+    patientBreed: str = Field(default="Não informada", max_length=120)
+    patientSex: str = Field(default="Não informado", max_length=40)
+    patientWeight: str = Field(default="Não informado", max_length=40)
+    ownerAddress: str = Field(default="", max_length=300)
+    items: list[PrescriptionMedicationRequest] = Field(min_length=1, max_length=20)
+    instructions: str = Field(default="", max_length=3000)
+
+
+class PrescriptionCancelRequest(BaseModel):
+    reason: str = Field(min_length=8, max_length=500)
 
 
 class BillingCatalogItem(BaseModel):
@@ -2012,6 +2056,8 @@ def logout(user: dict[str, Any] = Depends(current_user)) -> dict[str, str]:
 
 @app.get("/account/status")
 def account_status(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    user_id = int(user["sub"])
+    reconciled_orders = _reconcile_mercadopago_orders(user_id)
     with database_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -2033,7 +2079,7 @@ def account_status(user: dict[str, Any] = Depends(current_user)) -> dict[str, An
                 ) AS subscriptions ON TRUE
                 WHERE users.id = %s
                 """,
-                (int(user["sub"]),),
+                (user_id,),
             )
             account = cursor.fetchone()
     if account is None:
@@ -2054,6 +2100,7 @@ def account_status(user: dict[str, Any] = Depends(current_user)) -> dict[str, An
             "status": account[4],
             "expiresAt": account[5].isoformat() if account[5] else None,
         },
+        "reconciledPayments": reconciled_orders,
     }
 
 
@@ -3468,6 +3515,280 @@ def list_partner_appointments(
     }
 
 
+def _prescription_token(public_id: str) -> str:
+    return hmac.new(
+        JWT_SECRET.encode("utf-8"),
+        f"prescription:{public_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _prescription_response(item: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": item[0],
+        "appointmentId": item[1],
+        "publicId": str(item[2]),
+        "prescriptionType": item[3],
+        "status": item[4],
+        "version": item[5],
+        "patient": item[6],
+        "owner": item[7],
+        "prescriber": item[8],
+        "items": item[9],
+        "instructions": item[10],
+        "preparedAt": item[11].isoformat() if item[11] else None,
+        "signedAt": item[12].isoformat() if item[12] else None,
+        "cancelledAt": item[13].isoformat() if item[13] else None,
+        "cancellationReason": item[14] or "",
+        "createdAt": item[15].isoformat(),
+        "updatedAt": item[16].isoformat(),
+        "isValidForDispensing": item[4] == "signed" and item[12] is not None,
+        "warning": None if item[4] == "signed" and item[12] is not None else "Documento sem assinatura eletrônica válida. Não utilizar para dispensação.",
+    }
+
+
+PRESCRIPTION_SELECT = """
+    SELECT id, appointment_id, public_id, prescription_type, status, version,
+           patient_snapshot, owner_snapshot, prescriber_snapshot, items,
+           instructions, prepared_at, signed_at, cancelled_at,
+           cancellation_reason, created_at, updated_at
+    FROM veterinary_prescriptions
+"""
+
+
+@app.post("/partner/prescriptions")
+def create_partner_prescription(
+    request: PrescriptionCreateRequest,
+    user: dict[str, Any] = Depends(require_partner_access),
+) -> dict[str, Any]:
+    try:
+        prescription_type = normalize_prescription_type(request.prescriptionType)
+        items = validate_items([item.model_dump() for item in request.items])
+    except InvalidPrescription as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT a.id, a.user_id, a.pet_ref, a.pet_name, a.status,
+                       u.full_name, u.email,
+                       p.name, p.phone, p.address, p.city, p.state,
+                       pr.id, pr.full_name, pr.crmv_uf, pr.crmv_number,
+                       pr.verification_status
+                FROM appointments AS a
+                JOIN users AS u ON u.id = a.user_id
+                JOIN partner_profiles AS p ON p.id = a.partner_id
+                LEFT JOIN partner_professionals AS pr
+                  ON pr.partner_id = p.id AND pr.is_responsible_technical IS TRUE
+                WHERE a.id = %s AND a.partner_id = %s
+                FOR UPDATE OF a
+                """,
+                (request.appointmentId, user["partner_id"]),
+            )
+            context = cursor.fetchone()
+            if context is None:
+                raise HTTPException(status_code=404, detail="Atendimento não encontrado.")
+            if context[4] != "completed":
+                raise HTTPException(status_code=409, detail="Conclua o atendimento antes de criar o receituário.")
+            if context[12] is None or context[16] != "approved":
+                raise HTTPException(status_code=409, detail="O responsável técnico aprovado não foi encontrado.")
+            try:
+                crmv_uf, crmv_number = validate_crmv(context[14], context[15])
+            except InvalidPrescription as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            patient = {
+                "reference": context[2], "name": context[3],
+                "species": request.patientSpecies.strip(), "breed": request.patientBreed.strip(),
+                "sex": request.patientSex.strip(), "weight": request.patientWeight.strip(),
+            }
+            owner = {"name": context[5] or context[6], "email": context[6], "address": request.ownerAddress.strip()}
+            prescriber = {
+                "professionalId": context[12], "name": context[13],
+                "crmvUf": crmv_uf, "crmvNumber": crmv_number,
+                "establishment": context[7], "phone": context[8],
+                "address": ", ".join(value for value in (context[9], context[10], context[11]) if value),
+            }
+            public_id = str(uuid.uuid4())
+            token = _prescription_token(public_id)
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO veterinary_prescriptions
+                        (appointment_id, user_id, partner_id, professional_id,
+                         public_id, verification_token_hash, prescription_type,
+                         patient_snapshot, owner_snapshot, prescriber_snapshot,
+                         items, instructions)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        context[0], context[1], user["partner_id"], context[12],
+                        public_id, verification_token_hash(token), prescription_type,
+                        psycopg.types.json.Jsonb(patient), psycopg.types.json.Jsonb(owner),
+                        psycopg.types.json.Jsonb(prescriber), psycopg.types.json.Jsonb(items),
+                        request.instructions.strip(),
+                    ),
+                )
+            except psycopg.errors.UniqueViolation as error:
+                raise HTTPException(status_code=409, detail="Este atendimento já possui um receituário ativo.") from error
+            prescription_id = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                INSERT INTO veterinary_prescription_versions
+                    (prescription_id, version, patient_snapshot, owner_snapshot,
+                     prescriber_snapshot, items, instructions, created_by)
+                VALUES (%s, 1, %s, %s, %s, %s, %s, %s)
+                """,
+                (prescription_id, psycopg.types.json.Jsonb(patient), psycopg.types.json.Jsonb(owner), psycopg.types.json.Jsonb(prescriber), psycopg.types.json.Jsonb(items), request.instructions.strip(), int(user["sub"])),
+            )
+            cursor.execute(
+                """INSERT INTO veterinary_prescription_audits
+                       (prescription_id, actor_user_id, action, new_status)
+                   VALUES (%s, %s, 'created', 'draft')""",
+                (prescription_id, int(user["sub"])),
+            )
+            cursor.execute(PRESCRIPTION_SELECT + " WHERE id = %s", (prescription_id,))
+            created = cursor.fetchone()
+    return _prescription_response(created)
+
+
+@app.get("/partner/prescriptions")
+def list_partner_prescriptions(user: dict[str, Any] = Depends(require_partner_access)) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(PRESCRIPTION_SELECT + " WHERE partner_id = %s ORDER BY created_at DESC", (user["partner_id"],))
+            items = cursor.fetchall()
+    return {"prescriptions": [_prescription_response(item) for item in items]}
+
+
+@app.post("/partner/prescriptions/{prescription_id}/prepare")
+def prepare_partner_prescription(
+    prescription_id: int,
+    user: dict[str, Any] = Depends(require_partner_access),
+) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(PRESCRIPTION_SELECT + " WHERE id = %s AND partner_id = %s FOR UPDATE", (prescription_id, user["partner_id"]))
+            item = cursor.fetchone()
+            if item is None:
+                raise HTTPException(status_code=404, detail="Receituário não encontrado.")
+            if item[4] != "draft":
+                raise HTTPException(status_code=409, detail="Somente um rascunho pode ser preparado.")
+            try:
+                ensure_type_can_be_prepared(item[3])
+            except InvalidPrescription as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            public_id = str(item[2]); token = _prescription_token(public_id)
+            prepared_at = utc_now()
+            verification_url = f"{AUMIAU_WEB_URL}/prescriptions/verify/{public_id}?token={token}"
+            content = generate_prescription_pdf({
+                "publicId": public_id, "version": item[5],
+                "patient": item[6], "owner": item[7], "prescriber": item[8],
+                "items": item[9], "instructions": item[10],
+                "preparedAt": prepared_at.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"),
+            }, verification_url)
+            directory = os.path.join(PRESCRIPTIONS_DIR, str(user["partner_id"]))
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+            os.chmod(directory, 0o700)
+            storage_key = f"{user['partner_id']}/{public_id}-v{item[5]}.pdf"
+            path = os.path.join(PRESCRIPTIONS_DIR, storage_key)
+            with open(path, "wb") as prescription_file:
+                prescription_file.write(content)
+                prescription_file.flush(); os.fsync(prescription_file.fileno())
+            os.chmod(path, 0o600)
+            digest = hashlib.sha256(content).hexdigest()
+            cursor.execute(
+                """
+                UPDATE veterinary_prescriptions
+                SET status = 'ready_for_signature', pdf_storage_key = %s,
+                    pdf_sha256 = %s, prepared_at = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (storage_key, digest, prepared_at, prescription_id),
+            )
+            cursor.execute(
+                """INSERT INTO veterinary_prescription_audits
+                       (prescription_id, actor_user_id, action, previous_status, new_status,
+                        metadata)
+                   VALUES (%s, %s, 'prepared', 'draft', 'ready_for_signature', %s)""",
+                (prescription_id, int(user["sub"]), psycopg.types.json.Jsonb({"pdfSha256": digest})),
+            )
+            cursor.execute(PRESCRIPTION_SELECT + " WHERE id = %s", (prescription_id,))
+            prepared = cursor.fetchone()
+    return _prescription_response(prepared)
+
+
+@app.post("/partner/prescriptions/{prescription_id}/cancel")
+def cancel_partner_prescription(
+    prescription_id: int,
+    request: PrescriptionCancelRequest,
+    user: dict[str, Any] = Depends(require_partner_access),
+) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT status FROM veterinary_prescriptions WHERE id = %s AND partner_id = %s FOR UPDATE", (prescription_id, user["partner_id"]))
+            item = cursor.fetchone()
+            if item is None: raise HTTPException(status_code=404, detail="Receituário não encontrado.")
+            if item[0] == "cancelled": raise HTTPException(status_code=409, detail="O receituário já está cancelado.")
+            cursor.execute("UPDATE veterinary_prescriptions SET status='cancelled', cancelled_at=now(), cancellation_reason=%s, updated_at=now() WHERE id=%s", (request.reason.strip(), prescription_id))
+            cursor.execute("INSERT INTO veterinary_prescription_audits (prescription_id, actor_user_id, action, previous_status, new_status, metadata) VALUES (%s,%s,'cancelled',%s,'cancelled',%s)", (prescription_id, int(user["sub"]), item[0], psycopg.types.json.Jsonb({"reason": request.reason.strip()})))
+            cursor.execute(PRESCRIPTION_SELECT + " WHERE id = %s", (prescription_id,)); cancelled = cursor.fetchone()
+    return _prescription_response(cancelled)
+
+
+@app.get("/prescriptions")
+def list_client_prescriptions(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(PRESCRIPTION_SELECT + " WHERE user_id = %s AND status <> 'draft' ORDER BY created_at DESC", (int(user["sub"]),))
+            items = cursor.fetchall()
+    return {"prescriptions": [_prescription_response(item) for item in items]}
+
+
+def _prescription_pdf_response(prescription_id: int, actor: dict[str, Any], partner: bool) -> Response:
+    ownership = "partner_id = %s" if partner else "user_id = %s"
+    owner_id = actor["partner_id"] if partner else int(actor["sub"])
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT pdf_storage_key, public_id, version FROM veterinary_prescriptions WHERE id = %s AND {ownership} AND status <> 'draft'", (prescription_id, owner_id))
+            item = cursor.fetchone()
+            if item is None: raise HTTPException(status_code=404, detail="Receituário não encontrado.")
+            path = os.path.abspath(os.path.join(PRESCRIPTIONS_DIR, item[0] or ""))
+            root = os.path.abspath(PRESCRIPTIONS_DIR)
+            if not path.startswith(root + os.sep) or not os.path.isfile(path): raise HTTPException(status_code=404, detail="Arquivo do receituário não encontrado.")
+            cursor.execute("INSERT INTO veterinary_prescription_audits (prescription_id, actor_user_id, action, metadata) VALUES (%s,%s,%s,%s)", (prescription_id, int(actor["sub"]), "partner_download" if partner else "owner_download", psycopg.types.json.Jsonb({})))
+    with open(path, "rb") as file: content = file.read()
+    return Response(content=content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="receituario-{item[1]}-v{item[2]}.pdf"', "Cache-Control": "no-store, private", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/partner/prescriptions/{prescription_id}/content")
+def download_partner_prescription(prescription_id: int, user: dict[str, Any] = Depends(require_partner_access)) -> Response:
+    return _prescription_pdf_response(prescription_id, user, True)
+
+
+@app.get("/prescriptions/{prescription_id}/content")
+def download_client_prescription(prescription_id: int, user: dict[str, Any] = Depends(current_user)) -> Response:
+    return _prescription_pdf_response(prescription_id, user, False)
+
+
+@app.get("/prescriptions/verify/{public_id}", response_class=HTMLResponse)
+def verify_public_prescription(public_id: str, token: str = Query(min_length=32, max_length=128)) -> HTMLResponse:
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT verification_token_hash, status, signed_at, prescription_type, prescriber_snapshot, patient_snapshot, prepared_at, cancelled_at FROM veterinary_prescriptions WHERE public_id = %s", (public_id,))
+            item = cursor.fetchone()
+    if item is None or not verify_token(token, item[0]): raise HTTPException(status_code=404, detail="Documento não encontrado.")
+    valid, reason = public_validity(item[1], item[2])
+    color = "#287A4B" if valid else "#B42318"
+    heading = "Documento assinado e válido" if valid else ("Documento cancelado" if reason == "cancelled" else "Rascunho sem assinatura válida")
+    explanation = "A verificação criptográfica e a assinatura eletrônica foram confirmadas." if valid else "Este documento não possui assinatura eletrônica válida e não deve ser utilizado para dispensação de medicamentos."
+    prescriber, patient = item[4], item[5]
+    return HTMLResponse(
+        content=f'''<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Verificação de receituário AuMiau</title><style>body{{font-family:Arial,sans-serif;background:#fbf9f4;color:#26332e;margin:0;padding:24px}}main{{max-width:680px;margin:40px auto;background:white;border-radius:20px;padding:28px;box-shadow:0 12px 35px #17372f18}}h1{{color:#1e4d40}}.status{{border-left:6px solid {color};background:#f7f7f5;padding:16px;border-radius:8px}}.status h2{{color:{color};margin-top:0}}dt{{font-weight:700;color:#1e4d40;margin-top:14px}}dd{{margin:4px 0}}small{{color:#6b7a73}}</style></head><body><main><h1>AuMiau — Verificação de receituário</h1><section class="status"><h2>{html.escape(heading)}</h2><p>{html.escape(explanation)}</p></section><dl><dt>Documento</dt><dd>{html.escape(public_id)}</dd><dt>Profissional</dt><dd>{html.escape(str(prescriber.get('name') or ''))} — CRMV-{html.escape(str(prescriber.get('crmvUf') or ''))} {html.escape(str(prescriber.get('crmvNumber') or ''))}</dd><dt>Paciente</dt><dd>{html.escape(str(patient.get('name') or ''))}</dd><dt>Estado</dt><dd>{html.escape(str(item[1]))}</dd></dl><p><small>A consulta pública mostra apenas os dados mínimos necessários para verificar o documento.</small></p></main></body></html>''',
+        headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"},
+    )
+
+
 @app.get("/billing/catalog")
 def billing_catalog() -> dict[str, Any]:
     return {
@@ -3517,6 +3838,19 @@ def _order_payment(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _mercadopago_notification_fields() -> dict[str, str]:
+    if not MERCADOPAGO_NOTIFICATION_URL:
+        return {}
+    return {"notification_url": MERCADOPAGO_NOTIFICATION_URL}
+
+
+def _is_mercadopago_order_paid(order: dict[str, Any]) -> bool:
+    payment = _order_payment(order)
+    payment_status = str(payment["status"]).lower()
+    order_status = str(order.get("status") or "").lower()
+    return order_status == "processed" or payment_status in {"approved", "processed"}
+
+
 def _apply_mercadopago_order(order: dict[str, Any]) -> dict[str, Any] | None:
     provider_order_id = order.get("id")
     if not isinstance(provider_order_id, str) or not provider_order_id:
@@ -3524,7 +3858,7 @@ def _apply_mercadopago_order(order: dict[str, Any]) -> dict[str, Any] | None:
     payment = _order_payment(order)
     payment_status = str(payment["status"]).lower()
     order_status = str(order.get("status") or "").lower()
-    paid = order_status == "processed" or payment_status in {"approved", "processed"}
+    paid = _is_mercadopago_order_paid(order)
     status_value = "active" if paid else order_status or payment_status or "pending"
     now = utc_now()
 
@@ -3535,6 +3869,7 @@ def _apply_mercadopago_order(order: dict[str, Any]) -> dict[str, Any] | None:
                 SELECT id, user_id, product_id, amount_brl, status, paid_at
                 FROM billing_orders
                 WHERE provider_order_id = %s
+                FOR UPDATE
                 """,
                 (provider_order_id,),
             )
@@ -3645,6 +3980,43 @@ def _apply_mercadopago_order(order: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _reconcile_mercadopago_orders(user_id: int, *, limit: int = 5) -> int:
+    if not MERCADOPAGO_ACCESS_TOKEN:
+        return 0
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT provider_order_id
+                FROM billing_orders
+                WHERE user_id = %s
+                  AND provider = 'mercadopago'
+                  AND paid_at IS NULL
+                  AND created_at >= now() - interval '2 days'
+                  AND updated_at <= now() - interval '10 seconds'
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (user_id, limit),
+            )
+            order_ids = [str(item[0]) for item in cursor.fetchall()]
+    reconciled = 0
+    for order_id in order_ids:
+        try:
+            result = _apply_mercadopago_order(
+                mercadopago_request("GET", f"/v1/orders/{order_id}")
+            )
+            if result and result.get("paid"):
+                reconciled += 1
+        except HTTPException:
+            logger.warning(
+                "mercadopago_order_reconciliation_failed user_id=%s order_id=%s",
+                user_id,
+                order_id,
+            )
+    return reconciled
+
+
 @app.post("/billing/orders")
 def create_billing_order(
     request: BillingOrderRequest,
@@ -3728,6 +4100,7 @@ def create_billing_order(
             "total_amount": amount,
             "external_reference": external_reference,
             "processing_mode": "automatic",
+            **_mercadopago_notification_fields(),
             "items": [
                 {
                     "title": product["displayName"],

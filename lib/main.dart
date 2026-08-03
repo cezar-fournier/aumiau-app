@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:printing/printing.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'config/app_config.dart';
@@ -36,6 +37,7 @@ const _muted = Color(0xFF6B7A73);
 const _line = Color(0xFFE7E3D8);
 const _danger = Color(0xFFD9534F);
 const _success = Color(0xFF3F8E5F);
+const _warning = Color(0xFFB76E00);
 const _authPink = _forest;
 const _authPinkDark = _forestDark;
 const _authBlush = _paper;
@@ -778,7 +780,8 @@ class PersistentHomeShell extends StatefulWidget {
   State<PersistentHomeShell> createState() => _PersistentHomeShellState();
 }
 
-class _PersistentHomeShellState extends State<PersistentHomeShell> {
+class _PersistentHomeShellState extends State<PersistentHomeShell>
+    with WidgetsBindingObserver {
   // Temporariamente desativado até a conta Google Play Console estar ativa.
   // O código permanece preparado para reativação controlada posteriormente.
   static const bool _googlePlayBillingEnabled = false;
@@ -802,6 +805,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   bool _loading = true;
   String? _loadError;
   bool _updateNoticeShown = false;
+  DateTime? _lastUpdateCheckAt;
   bool _showAuthGate = true;
   bool _showProfileChooser = false;
   _AppMode _activeMode = _AppMode.client;
@@ -810,12 +814,14 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
   String _partnerProfileStatus = 'pending';
   _AuthScreen _authScreen = _AuthScreen.welcome;
   bool _authBusy = false;
+  bool _entitlementRefreshInFlight = false;
   String? _pendingVerificationEmail;
   String? _pendingRegistrationName;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _database = widget.database ?? AppDatabase();
     _syncGateway = HttpSyncGateway(baseUri: AppConfig.apiBaseUri);
     _playBilling = PlayBillingService();
@@ -837,9 +843,20 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (_googlePlayBillingEnabled) unawaited(_playBilling.dispose());
     if (widget.database == null) unawaited(_database.close());
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _accessToken != null) {
+      unawaited(_refreshAccountEntitlement());
+    }
+    if (state == AppLifecycleState.resumed && widget.enableUpdateChecks) {
+      unawaited(_checkForUpdates());
+    }
   }
 
   Future<void> _initializeApp() async {
@@ -871,6 +888,13 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   Future<void> _checkForUpdates() async {
     if (_updateNoticeShown) return;
+    final now = DateTime.now();
+    final lastCheck = _lastUpdateCheckAt;
+    if (lastCheck != null &&
+        now.difference(lastCheck) < const Duration(minutes: 15)) {
+      return;
+    }
+    _lastUpdateCheckAt = now;
     final update = await UpdateService().checkForUpdate();
     if (!mounted || update == null) return;
     _updateNoticeShown = true;
@@ -3090,6 +3114,139 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
     }
   }
 
+  Future<String> _createPrescription(
+    Appointment appointment,
+    Map<String, dynamic> draft,
+  ) async {
+    final accessToken = _accessToken;
+    if (accessToken == null || appointment.id == null) {
+      return 'Entre novamente para criar o receituário.';
+    }
+    try {
+      final created = await _syncGateway.createPrescription(
+        accessToken: accessToken,
+        prescription: {
+          ...draft,
+          'appointmentId': appointment.id,
+          'prescriptionType': 'common',
+        },
+      );
+      final prescriptionId = (created['id'] as num?)?.toInt();
+      if (prescriptionId == null) {
+        return 'O servidor não retornou o identificador do receituário.';
+      }
+      await _syncGateway.preparePrescription(
+        accessToken: accessToken,
+        prescriptionId: prescriptionId,
+      );
+      return 'Rascunho preparado e disponibilizado ao tutor. Ele ainda não possui validade para dispensação.';
+    } on SyncGatewayException catch (error) {
+      return _appointmentErrorMessage(error);
+    }
+  }
+
+  Future<void> _openPrescriptions() async {
+    final accessToken = _accessToken;
+    if (accessToken == null || accessToken.isEmpty) {
+      _showProductMessage('Entre na sua conta para consultar receituários.');
+      return;
+    }
+    try {
+      final prescriptions = await _syncGateway.loadPrescriptions(
+        accessToken: accessToken,
+      );
+      if (!mounted) return;
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        useSafeArea: true,
+        builder: (sheetContext) => DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: .72,
+          maxChildSize: .94,
+          builder: (context, controller) => ListView(
+            controller: controller,
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
+            children: [
+              Text(
+                'Receituários',
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: _ink,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Documentos preparados pelo parceiro aparecem aqui. Confira sempre o aviso de validade.',
+                style: TextStyle(color: _muted),
+              ),
+              const SizedBox(height: 16),
+              if (prescriptions.isEmpty)
+                const Card(
+                  child: ListTile(
+                    leading: Icon(Icons.description_outlined),
+                    title: Text('Nenhum receituário disponível'),
+                    subtitle: Text(
+                      'Quando um parceiro preparar um documento para você, ele aparecerá nesta área.',
+                    ),
+                  ),
+                ),
+              ...prescriptions.map((item) {
+                final patient = item['patient'] is Map
+                    ? Map<String, dynamic>.from(item['patient'] as Map)
+                    : const <String, dynamic>{};
+                final valid = item['isValidForDispensing'] == true;
+                final id = (item['id'] as num?)?.toInt();
+                return Card(
+                  child: ListTile(
+                    leading: Icon(
+                      valid
+                          ? Icons.verified_outlined
+                          : Icons.warning_amber_rounded,
+                      color: valid ? _success : _warning,
+                    ),
+                    title: Text(
+                      patient['name']?.toString() ?? 'Receituário veterinário',
+                    ),
+                    subtitle: Text(
+                      valid
+                          ? 'Assinado e válido conforme verificação do sistema.'
+                          : 'Rascunho sem assinatura — não válido para dispensação.',
+                    ),
+                    trailing: IconButton(
+                      tooltip: 'Baixar PDF',
+                      onPressed: id == null
+                          ? null
+                          : () async {
+                              try {
+                                final bytes = await _syncGateway
+                                    .downloadPrescription(
+                                      accessToken: accessToken,
+                                      prescriptionId: id,
+                                    );
+                                await Printing.sharePdf(
+                                  bytes: bytes,
+                                  filename:
+                                      'receituario-${patient['name'] ?? id}.pdf',
+                                );
+                              } on SyncGatewayException catch (error) {
+                                if (mounted) _showProductMessage(error.message);
+                              }
+                            },
+                      icon: const Icon(Icons.picture_as_pdf_outlined),
+                    ),
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
+      );
+    } on SyncGatewayException catch (error) {
+      _showProductMessage(error.message);
+    }
+  }
+
   Future<void> _openScheduleAppointment(PartnerClinic partner) async {
     if (_pets.isEmpty) {
       _showProductMessage('Cadastre um pet antes de solicitar atendimento.');
@@ -4184,7 +4341,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   Future<void> _openDeveloperWhatsApp(String phone) async {
     final uri = Uri.parse(
-      'https://wa.me/$phone?text=${Uri.encodeComponent('Olá! Vim pelo AuMiau e gostaria de falar com a C.A. Informática.')}',
+      'https://wa.me/$phone?text=${Uri.encodeComponent('Olá! Vim pelo AuMiau e gostaria de falar com Cezar Fournier.')}',
     );
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
@@ -4201,41 +4358,24 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Image.asset(
-                'assets/branding/ca_informatica_logo.png',
-                width: 120,
-                height: 120,
-                fit: BoxFit.contain,
-                semanticLabel: 'Logo da C.A. Informática',
+              const CircleAvatar(
+                radius: 44,
+                backgroundColor: Color(0xFFE8F3ED),
+                child: Icon(
+                  Icons.verified_user_outlined,
+                  size: 48,
+                  color: _forest,
+                ),
               ),
               const SizedBox(height: 12),
               const Text(
-                'C.A. Informática',
+                'Cezar Fournier',
                 style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 10),
-              const Text('CNPJ: 04.368.187/0001-31'),
-              const SizedBox(height: 8),
               const Text(
-                'Av. Auton Furtado, 233 - Cidade Nova\n'
-                '69.415-000 - Iranduba - AM - Brasil',
+                'Desenvolvedor do AuMiau',
                 textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              InkWell(
-                onTap: () => launchUrl(
-                  Uri.parse('https://www.cainformatica.com.br'),
-                  mode: LaunchMode.externalApplication,
-                ),
-                child: const Text(
-                  'www.cainformatica.com.br',
-                  style: TextStyle(
-                    color: _forest,
-                    decoration: TextDecoration.underline,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
               ),
               const SizedBox(height: 10),
               TextButton.icon(
@@ -4328,7 +4468,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
 
   Future<void> _refreshAccountEntitlement() async {
     final accessToken = _accessToken;
-    if (accessToken == null) return;
+    if (accessToken == null || _entitlementRefreshInFlight) return;
+    _entitlementRefreshInFlight = true;
     try {
       final status = await _syncGateway.loadAccountStatus(
         accessToken: accessToken,
@@ -4382,6 +4523,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
       );
     } on SyncGatewayException {
       // O app continua offline com o último estado local conhecido.
+    } finally {
+      _entitlementRefreshInFlight = false;
     }
   }
 
@@ -5082,6 +5225,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         onUploadDocument: _uploadPartnerDocument,
         onLoadAppointments: _loadPartnerAppointments,
         onUpdateAppointmentStatus: _updatePartnerAppointment,
+        onCreatePrescription: _createPrescription,
         onSwitchToClient: () => _selectAppMode(_AppMode.client),
         onLogout: _logout,
         onOpenDeveloper: _openDeveloperInfo,
@@ -5132,6 +5276,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell> {
         petCount: _pets.length,
         onOpenSubscription: _showSubscriptionOptions,
         onOpenNotifications: _showNotificationSettings,
+        onOpenPrescriptions: _openPrescriptions,
         onOpenPrivacy: _showPrivacyAndData,
         onOpenHelp: _showHelp,
         onOpenDeveloper: _openDeveloperInfo,
@@ -5338,6 +5483,7 @@ class PartnerWorkspacePage extends StatefulWidget {
     this.onUploadDocument,
     this.onLoadAppointments,
     this.onUpdateAppointmentStatus,
+    this.onCreatePrescription,
     required this.onSwitchToClient,
     required this.onLogout,
     required this.onOpenDeveloper,
@@ -5360,6 +5506,11 @@ class PartnerWorkspacePage extends StatefulWidget {
   final Future<List<Appointment>> Function()? onLoadAppointments;
   final Future<String> Function(Appointment appointment, String status)?
   onUpdateAppointmentStatus;
+  final Future<String> Function(
+    Appointment appointment,
+    Map<String, dynamic> draft,
+  )?
+  onCreatePrescription;
   final VoidCallback onSwitchToClient;
   final Future<void> Function() onLogout;
   final VoidCallback onOpenDeveloper;
@@ -5597,6 +5748,214 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
     await _refreshAppointments();
+  }
+
+  Future<void> _openPrescriptionEditor(Appointment appointment) async {
+    final handler = widget.onCreatePrescription;
+    if (handler == null) return;
+    final species = TextEditingController();
+    final breed = TextEditingController();
+    final sex = TextEditingController();
+    final weight = TextEditingController();
+    final ownerAddress = TextEditingController();
+    final medication = TextEditingController();
+    final concentration = TextEditingController();
+    final form = TextEditingController();
+    final quantity = TextEditingController();
+    final dose = TextEditingController();
+    final route = TextEditingController(text: 'Oral');
+    final frequency = TextEditingController();
+    final duration = TextEditingController();
+    final notes = TextEditingController();
+    final instructions = TextEditingController();
+    String? validationMessage;
+    final draft = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            18,
+            20,
+            MediaQuery.viewInsetsOf(sheetContext).bottom + 24,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Novo receituário · ${appointment.petName ?? 'Pet'}',
+                  style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                    color: _ink,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Card(
+                  color: Color(0xFFFFF3D8),
+                  child: ListTile(
+                    leading: Icon(Icons.warning_amber_rounded, color: _warning),
+                    title: Text('Receituário comum em modo preparatório'),
+                    subtitle: Text(
+                      'O PDF será identificado como rascunho sem validade para dispensação até receber assinatura eletrônica válida. Antimicrobianos e controlados estão bloqueados.',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Paciente',
+                  style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PrescriptionField(controller: species, label: 'Espécie *'),
+                _PrescriptionField(controller: breed, label: 'Raça'),
+                _PrescriptionField(controller: sex, label: 'Sexo'),
+                _PrescriptionField(controller: weight, label: 'Peso atual'),
+                _PrescriptionField(
+                  controller: ownerAddress,
+                  label: 'Endereço do responsável',
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Medicamento',
+                  style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _PrescriptionField(
+                  controller: medication,
+                  label: 'Medicamento *',
+                ),
+                _PrescriptionField(
+                  controller: concentration,
+                  label: 'Concentração *',
+                ),
+                _PrescriptionField(
+                  controller: form,
+                  label: 'Forma farmacêutica *',
+                ),
+                _PrescriptionField(controller: quantity, label: 'Quantidade *'),
+                _PrescriptionField(controller: dose, label: 'Dose *'),
+                _PrescriptionField(
+                  controller: route,
+                  label: 'Via de administração *',
+                ),
+                _PrescriptionField(
+                  controller: frequency,
+                  label: 'Frequência *',
+                ),
+                _PrescriptionField(controller: duration, label: 'Duração *'),
+                _PrescriptionField(
+                  controller: notes,
+                  label: 'Observações do medicamento',
+                ),
+                _PrescriptionField(
+                  controller: instructions,
+                  label: 'Orientações adicionais',
+                  maxLines: 3,
+                ),
+                if (validationMessage != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    validationMessage!,
+                    style: const TextStyle(
+                      color: _danger,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      final required = [
+                        species,
+                        medication,
+                        concentration,
+                        form,
+                        quantity,
+                        dose,
+                        route,
+                        frequency,
+                        duration,
+                      ];
+                      if (required.any(
+                        (controller) => controller.text.trim().isEmpty,
+                      )) {
+                        setSheetState(
+                          () => validationMessage =
+                              'Preencha todos os campos marcados com * para continuar.',
+                        );
+                        return;
+                      }
+                      Navigator.pop(sheetContext, {
+                        'patientSpecies': species.text.trim(),
+                        'patientBreed': breed.text.trim().isEmpty
+                            ? 'Não informada'
+                            : breed.text.trim(),
+                        'patientSex': sex.text.trim().isEmpty
+                            ? 'Não informado'
+                            : sex.text.trim(),
+                        'patientWeight': weight.text.trim().isEmpty
+                            ? 'Não informado'
+                            : weight.text.trim(),
+                        'ownerAddress': ownerAddress.text.trim(),
+                        'items': [
+                          {
+                            'medication': medication.text.trim(),
+                            'concentration': concentration.text.trim(),
+                            'form': form.text.trim(),
+                            'quantity': quantity.text.trim(),
+                            'dose': dose.text.trim(),
+                            'route': route.text.trim(),
+                            'frequency': frequency.text.trim(),
+                            'duration': duration.text.trim(),
+                            'notes': notes.text.trim(),
+                          },
+                        ],
+                        'instructions': instructions.text.trim(),
+                      });
+                    },
+                    icon: const Icon(Icons.description_outlined),
+                    label: const Text('Preparar rascunho em PDF'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    for (final controller in [
+      species,
+      breed,
+      sex,
+      weight,
+      ownerAddress,
+      medication,
+      concentration,
+      form,
+      quantity,
+      dose,
+      route,
+      frequency,
+      duration,
+      notes,
+      instructions,
+    ]) {
+      controller.dispose();
+    }
+    if (draft == null || !mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final message = await handler(appointment, draft);
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -5896,6 +6255,14 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
           child: const Text('Concluir atendimento'),
         ),
       );
+    } else if (appointment.status == 'completed') {
+      actions.add(
+        FilledButton.tonalIcon(
+          onPressed: () => _openPrescriptionEditor(appointment),
+          icon: const Icon(Icons.description_outlined),
+          label: const Text('Criar receituário'),
+        ),
+      );
     }
     return Card(
       child: Padding(
@@ -5969,7 +6336,7 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
       _partnerInfoCard(
         Icons.business_center_outlined,
         'Desenvolvedor',
-        'C.A. Informática • AuMiau',
+        'Cezar Fournier • AuMiau',
         widget.onOpenDeveloper,
       ),
       const SizedBox(height: 10),
@@ -5999,6 +6366,29 @@ class _PartnerWorkspacePageState extends State<PartnerWorkspacePage> {
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
       subtitle: Text(subtitle),
       trailing: const Icon(Icons.chevron_right),
+    ),
+  );
+}
+
+class _PrescriptionField extends StatelessWidget {
+  const _PrescriptionField({
+    required this.controller,
+    required this.label,
+    this.maxLines = 1,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: TextField(
+      controller: controller,
+      maxLines: maxLines,
+      textCapitalization: TextCapitalization.sentences,
+      decoration: InputDecoration(labelText: label),
     ),
   );
 }
@@ -6516,16 +6906,17 @@ class _AuthTrustFooter extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Image.asset(
-                      'assets/branding/ca_informatica_logo.png',
-                      width: 24,
-                      height: 24,
-                      fit: BoxFit.contain,
-                      semanticLabel: context.l10n.text('trust.logoSemantics'),
+                    Semantics(
+                      label: context.l10n.text('trust.logoSemantics'),
+                      child: const Icon(
+                        Icons.verified_user_outlined,
+                        size: 18,
+                        color: _forest,
+                      ),
                     ),
                     const SizedBox(width: 5),
                     const Text(
-                      'C.A. Informática',
+                      'Cezar Fournier',
                       style: TextStyle(
                         color: _forest,
                         fontSize: 11,
@@ -8661,6 +9052,7 @@ class ProfilePage extends StatelessWidget {
     this.petCount = 2,
     this.onOpenSubscription,
     this.onOpenNotifications,
+    this.onOpenPrescriptions,
     this.onOpenPrivacy,
     this.onOpenHelp,
     this.onOpenDeveloper,
@@ -8683,6 +9075,7 @@ class ProfilePage extends StatelessWidget {
   final int petCount;
   final VoidCallback? onOpenSubscription;
   final VoidCallback? onOpenNotifications;
+  final VoidCallback? onOpenPrescriptions;
   final VoidCallback? onOpenPrivacy;
   final VoidCallback? onOpenHelp;
   final VoidCallback? onOpenDeveloper;
@@ -9050,6 +9443,12 @@ class ProfilePage extends StatelessWidget {
                 onTap: onOpenNotifications,
               ),
               _SettingsTile(
+                icon: Icons.description_outlined,
+                title: 'Receituários',
+                subtitle: 'Documentos veterinários e verificação de validade',
+                onTap: onOpenPrescriptions,
+              ),
+              _SettingsTile(
                 icon: Icons.security_outlined,
                 title: 'Privacidade e dados',
                 subtitle: 'Uso, backup e segurança dos dados',
@@ -9064,7 +9463,7 @@ class ProfilePage extends StatelessWidget {
               _SettingsTile(
                 icon: Icons.business_outlined,
                 title: 'Desenvolvedor',
-                subtitle: 'C.A. Informática • AuMiau',
+                subtitle: 'Cezar Fournier • AuMiau',
                 onTap: onOpenDeveloper,
               ),
             ],

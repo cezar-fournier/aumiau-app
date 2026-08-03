@@ -99,10 +99,11 @@ const _catalogs = <String, Map<String, String>>{
         'Seus dados são transmitidos por conexão segura e tratados conforme a finalidade dos recursos do AuMiau.',
     'trust.paymentDetails':
         'Os pagamentos do AuMiau Family são processados pelo Mercado Pago via Pix. O AuMiau não armazena dados bancários do usuário.',
-    'trust.company': 'Desenvolvido por C.A. Informática',
+    'trust.company': 'Desenvolvido por Cezar Fournier',
     'trust.semantics':
-        'Dados protegidos. Pagamentos processados pelo Mercado Pago. Desenvolvido por C.A. Informática. Toque para saber mais.',
-    'trust.logoSemantics': 'Logo da C.A. Informática',
+        'Dados protegidos. Pagamentos processados pelo Mercado Pago. Desenvolvido por Cezar Fournier. Toque para saber mais.',
+    'trust.logoSemantics':
+        'Selo de identificação do desenvolvedor Cezar Fournier',
   },
   'en': {
     'language.title': 'Language',
@@ -153,10 +154,10 @@ const _catalogs = <String, Map<String, String>>{
         'Your data is transmitted through a secure connection and handled according to the purpose of AuMiau features.',
     'trust.paymentDetails':
         'AuMiau Family payments are processed by Mercado Pago via Pix. AuMiau does not store your banking data.',
-    'trust.company': 'Developed by C.A. Informática',
+    'trust.company': 'Developed by Cezar Fournier',
     'trust.semantics':
-        'Protected data. Payments processed by Mercado Pago. Developed by C.A. Informática. Tap to learn more.',
-    'trust.logoSemantics': 'C.A. Informática logo',
+        'Protected data. Payments processed by Mercado Pago. Developed by Cezar Fournier. Tap to learn more.',
+    'trust.logoSemantics': 'Developer identification badge: Cezar Fournier',
   },
   'es': {
     'language.title': 'Idioma',
@@ -209,9 +210,10 @@ const _catalogs = <String, Map<String, String>>{
         'Tus datos se transmiten mediante una conexión segura y se tratan según la finalidad de las funciones de AuMiau.',
     'trust.paymentDetails':
         'Los pagos de AuMiau Family se procesan por Mercado Pago mediante Pix. AuMiau no almacena tus datos bancarios.',
-    'trust.company': 'Desarrollado por C.A. Informática',
+    'trust.company': 'Desarrollado por Cezar Fournier',
     'trust.semantics':
-        'Datos protegidos. Pagos procesados por Mercado Pago. Desarrollado por C.A. Informática. Toca para saber más.',
-    'trust.logoSemantics': 'Logo de C.A. Informática',
+        'Datos protegidos. Pagos procesados por Mercado Pago. Desarrollado por Cezar Fournier. Toca para saber más.',
+    'trust.logoSemantics':
+        'Sello de identificación del desarrollador Cezar Fournier',
   },
 };

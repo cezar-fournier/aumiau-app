@@ -27,8 +27,8 @@ class UpdateService {
   UpdateService({http.Client? client}) : _client = client ?? http.Client();
 
   static const repository = 'cezar-fournier/aumiau-app';
-  static const _latestReleasePath =
-      'https://api.github.com/repos/$repository/releases/latest';
+  static const _releasesPath =
+      'https://api.github.com/repos/$repository/releases?per_page=20';
 
   final http.Client _client;
 
@@ -36,7 +36,7 @@ class UpdateService {
     try {
       final response = await _client
           .get(
-            Uri.parse(_latestReleasePath),
+            Uri.parse(_releasesPath),
             headers: const {
               'Accept': 'application/vnd.github+json',
               'User-Agent': 'AuMiau-App',
@@ -45,13 +45,34 @@ class UpdateService {
           .timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) return null;
       final packageInfo = await PackageInfo.fromPlatform();
-      return parseRelease(
-        jsonDecode(response.body) as Map<String, dynamic>,
+      return parseReleases(
+        jsonDecode(response.body) as List<dynamic>,
         currentVersion: packageInfo.version,
       );
     } on Object {
       return null;
     }
+  }
+
+  UpdateInfo? parseReleases(
+    List<dynamic> releases, {
+    required String currentVersion,
+  }) {
+    final betaChannel = _isPrerelease(currentVersion);
+    final candidates = <UpdateInfo>[];
+    for (final item in releases) {
+      if (item is! Map) continue;
+      final release = Map<String, dynamic>.from(item);
+      if (release['draft'] == true) continue;
+      if (!betaChannel && release['prerelease'] == true) continue;
+      final update = parseRelease(release, currentVersion: currentVersion);
+      if (update != null) candidates.add(update);
+    }
+    if (candidates.isEmpty) return null;
+    candidates.sort(
+      (left, right) => compareVersions(right.version, left.version),
+    );
+    return candidates.first;
   }
 
   UpdateInfo? parseRelease(
@@ -93,8 +114,10 @@ class UpdateService {
       _compareVersions(left, right);
 
   static int _compareVersions(String left, String right) {
-    final leftParts = _versionParts(left);
-    final rightParts = _versionParts(right);
+    final leftVersion = _semanticVersion(left);
+    final rightVersion = _semanticVersion(right);
+    final leftParts = leftVersion.$1;
+    final rightParts = rightVersion.$1;
     final length = leftParts.length > rightParts.length
         ? leftParts.length
         : rightParts.length;
@@ -103,16 +126,49 @@ class UpdateService {
       final rightPart = index < rightParts.length ? rightParts[index] : 0;
       if (leftPart != rightPart) return leftPart.compareTo(rightPart);
     }
+    final leftPrerelease = leftVersion.$2;
+    final rightPrerelease = rightVersion.$2;
+    if (leftPrerelease.isEmpty && rightPrerelease.isNotEmpty) return 1;
+    if (leftPrerelease.isNotEmpty && rightPrerelease.isEmpty) return -1;
+    final prereleaseLength = leftPrerelease.length > rightPrerelease.length
+        ? leftPrerelease.length
+        : rightPrerelease.length;
+    for (var index = 0; index < prereleaseLength; index++) {
+      if (index >= leftPrerelease.length) return -1;
+      if (index >= rightPrerelease.length) return 1;
+      final leftPart = leftPrerelease[index];
+      final rightPart = rightPrerelease[index];
+      final leftNumber = int.tryParse(leftPart);
+      final rightNumber = int.tryParse(rightPart);
+      if (leftNumber != null &&
+          rightNumber != null &&
+          leftNumber != rightNumber) {
+        return leftNumber.compareTo(rightNumber);
+      }
+      if (leftNumber != null && rightNumber == null) return -1;
+      if (leftNumber == null && rightNumber != null) return 1;
+      final comparison = leftPart.compareTo(rightPart);
+      if (comparison != 0) return comparison;
+    }
     return 0;
   }
 
-  static List<int> _versionParts(String value) => value
-      .replaceFirst(RegExp(r'^[vV]'), '')
-      .split('+')
-      .first
-      .split('-')
-      .first
-      .split('.')
-      .map((part) => int.tryParse(part) ?? 0)
-      .toList();
+  static (List<int>, List<String>) _semanticVersion(String value) {
+    final normalized = value
+        .replaceFirst(RegExp(r'^[vV]'), '')
+        .split('+')
+        .first;
+    final segments = normalized.split('-');
+    final numbers = segments.first
+        .split('.')
+        .map((part) => int.tryParse(part) ?? 0)
+        .toList();
+    final prerelease = segments.length <= 1
+        ? const <String>[]
+        : segments.skip(1).join('-').split('.');
+    return (numbers, prerelease);
+  }
+
+  static bool _isPrerelease(String value) =>
+      value.replaceFirst(RegExp(r'^[vV]'), '').split('+').first.contains('-');
 }

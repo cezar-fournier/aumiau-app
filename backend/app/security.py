@@ -54,6 +54,7 @@ SENSITIVE_RATE_LIMITS: dict[str, tuple[int, int]] = {
     "/auth/password-reset/confirm": (5, 300),
     "/auth/verify-email": (10, 300),
     "/partner/documents": (20, 300),
+    "/partner/prescriptions": (30, 300),
     "/billing/orders": (10, 300),
     "/billing/verify": (10, 300),
     "/admin/mfa/setup": (5, 300),
@@ -65,6 +66,8 @@ SENSITIVE_RATE_LIMIT_PREFIXES: tuple[tuple[str, tuple[int, int]], ...] = (
     ("/partner/appointments/", (60, 60)),
     ("/appointments/", (60, 60)),
     ("/partner/documents/", (60, 60)),
+    ("/partner/prescriptions/", (60, 60)),
+    ("/prescriptions/", (120, 60)),
     ("/admin/partner-documents/", (120, 60)),
 )
 

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -344,6 +345,64 @@ class HttpSyncGateway implements SyncGateway {
       body: {'status': status},
     ),
   );
+
+  Future<Map<String, dynamic>> createPrescription({
+    required String accessToken,
+    required Map<String, dynamic> prescription,
+  }) async => _decodeObject(
+    await _post(
+      'partner/prescriptions',
+      accessToken: accessToken,
+      body: prescription,
+    ),
+  );
+
+  Future<Map<String, dynamic>> preparePrescription({
+    required String accessToken,
+    required int prescriptionId,
+  }) async => _decodeObject(
+    await _post(
+      'partner/prescriptions/$prescriptionId/prepare',
+      accessToken: accessToken,
+      body: const {},
+    ),
+  );
+
+  Future<List<Map<String, dynamic>>> loadPrescriptions({
+    required String accessToken,
+    bool partner = false,
+  }) async {
+    final data = _decodeObject(
+      await _get(
+        partner ? 'partner/prescriptions' : 'prescriptions',
+        accessToken: accessToken,
+      ),
+    );
+    return _decodeObjectList(data['prescriptions']);
+  }
+
+  Future<Uint8List> downloadPrescription({
+    required String accessToken,
+    required int prescriptionId,
+    bool partner = false,
+  }) async {
+    final uri = baseUri.resolve(
+      partner
+          ? 'partner/prescriptions/$prescriptionId/content'
+          : 'prescriptions/$prescriptionId/content',
+    );
+    final response = await _client.get(
+      uri,
+      headers: {'Authorization': 'Bearer $accessToken'},
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw SyncGatewayException(
+        _errorMessage(response),
+        statusCode: response.statusCode,
+      );
+    }
+    return response.bodyBytes;
+  }
 
   Future<Map<String, dynamic>> loadAccountStatus({
     required String accessToken,

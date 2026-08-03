@@ -1,5 +1,5 @@
 import 'package:aumiau_app/main.dart';
-import 'package:aumiau_app/data/app_database.dart' hide Pet;
+import 'package:aumiau_app/data/app_database.dart' hide Appointment, Pet;
 import 'package:aumiau_app/data/account_scope.dart';
 import 'package:aumiau_app/domain/product_plan.dart';
 import 'package:aumiau_app/domain/partner_directory.dart';
@@ -835,7 +835,7 @@ void main() {
     await database.close();
   });
 
-  testWidgets('exibe informações de confiança e da desenvolvedora', (
+  testWidgets('exibe informações de confiança e do desenvolvedor', (
     tester,
   ) async {
     final database = AppDatabase.fromExecutor(NativeDatabase.memory());
@@ -845,7 +845,7 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
 
     expect(find.text('Dados protegidos'), findsOneWidget);
-    expect(find.text('C.A. Informática'), findsOneWidget);
+    expect(find.text('Cezar Fournier'), findsOneWidget);
     expect(find.text('BETA'), findsOneWidget);
     await tester.ensureVisible(find.text('Dados protegidos'));
     await tester.tap(find.text('Dados protegidos'));
@@ -883,6 +883,59 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Cadastro profissional'), findsNothing);
     expect(find.text('AuMiau Parceiro'), findsOneWidget);
+  });
+
+  testWidgets('atendimento concluído permite preparar receituário comum', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1080, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartnerWorkspacePage(
+          email: 'parceiro@exemplo.com',
+          verificationStatus: 'approved',
+          profileStatus: 'active',
+          onRegistrationSubmitted: () {},
+          onLoadAppointments: () async => [
+            Appointment(
+              id: 42,
+              petId: 7,
+              petName: 'Amora',
+              clientName: 'Responsável',
+              partnerName: 'Clínica',
+              service: 'Consulta veterinária',
+              scheduledAt: DateTime(2026, 8, 3, 10),
+              status: 'completed',
+              createdAt: DateTime(2026, 8, 3, 9),
+            ),
+          ],
+          onCreatePrescription: (_, _) async => 'Rascunho preparado.',
+          onSwitchToClient: () {},
+          onLogout: () async {},
+          onOpenDeveloper: () {},
+          onOpenHelp: () {},
+          onOpenPrivacy: () {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Agenda').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Criar receituário'), findsOneWidget);
+    await tester.tap(find.text('Criar receituário'));
+    await tester.pumpAndSettle();
+    expect(find.text('Novo receituário · Amora'), findsOneWidget);
+    expect(
+      find.textContaining('sem validade para dispensação'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Antimicrobianos e controlados'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('Hoje usa primeiro e último nome do cadastro', (tester) async {
@@ -980,6 +1033,48 @@ void main() {
     expect(update?.version, '9.2.0');
     expect(update?.downloadUrl, contains('.apk'));
     expect(UpdateService.compareVersions('1.2.0', '1.1.9'), greaterThan(0));
+    expect(
+      UpdateService.compareVersions('0.6.0-beta.5', '0.6.0-beta.2'),
+      greaterThan(0),
+    );
+    expect(
+      UpdateService.compareVersions('0.6.0', '0.6.0-beta.5'),
+      greaterThan(0),
+    );
+  });
+
+  test('canal beta considera releases preliminares e ignora rascunhos', () {
+    final service = UpdateService(client: _FakeHttpClient());
+    final update = service.parseReleases([
+      {
+        'tag_name': 'v0.6.0-beta.5',
+        'html_url': 'https://example.invalid/beta5',
+        'prerelease': true,
+        'draft': false,
+        'assets': [
+          {
+            'name': 'aumiau-v0.6.0-beta.5.apk',
+            'browser_download_url': 'https://example.invalid/beta5.apk',
+          },
+        ],
+      },
+      {
+        'tag_name': 'v0.7.0-beta.1',
+        'html_url': 'https://example.invalid/draft',
+        'prerelease': true,
+        'draft': true,
+        'assets': const [],
+      },
+      {
+        'tag_name': 'v0.5.0',
+        'html_url': 'https://example.invalid/stable',
+        'prerelease': false,
+        'draft': false,
+        'assets': const [],
+      },
+    ], currentVersion: '0.6.0-beta.2');
+    expect(update?.version, '0.6.0-beta.5');
+    expect(update?.downloadUrl, endsWith('.apk'));
   });
 }
 
