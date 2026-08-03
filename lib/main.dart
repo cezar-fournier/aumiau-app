@@ -52,8 +52,16 @@ Future<void> main() async {
     const LocalePreferenceStore(),
   );
   await localeController.load();
+  await NotificationService.instance.initialize(
+    onSelectPayload: _openNotificationPayload,
+  );
   runApp(AumiauApp(localeController: localeController));
-  unawaited(NotificationService.instance.initialize());
+}
+
+Future<void> _openNotificationPayload(String payload) async {
+  final uri = Uri.tryParse(payload);
+  if (uri == null || uri.scheme != 'https') return;
+  await launchUrl(uri, mode: LaunchMode.externalApplication);
 }
 
 class AumiauApp extends StatefulWidget {
@@ -805,6 +813,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
   bool _loading = true;
   String? _loadError;
   bool _updateNoticeShown = false;
+  UpdateInfo? _availableUpdate;
   DateTime? _lastUpdateCheckAt;
   bool _showAuthGate = true;
   bool _showProfileChooser = false;
@@ -897,6 +906,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
     _lastUpdateCheckAt = now;
     final update = await UpdateService().checkForUpdate();
     if (!mounted || update == null) return;
+    _availableUpdate = update;
     _updateNoticeShown = true;
     await NotificationService.instance.showUpdateAvailable(
       version: update.version,
@@ -909,6 +919,59 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
           'Nova versão ${update.version} disponível nas Releases do GitHub.',
         ),
         duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: 'Atualizar',
+          onPressed: () => _openUpdateDownload(update),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openUpdateDownload(UpdateInfo update) async {
+    final uri = Uri.tryParse(update.downloadUrl);
+    if (uri == null || uri.scheme != 'https') {
+      _showProductMessage('O link desta atualização é inválido.');
+      return;
+    }
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      _showProductMessage('Não foi possível abrir o download da atualização.');
+    }
+  }
+
+  Future<void> _showUpdateCenter() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final update = _availableUpdate ?? await UpdateService().checkForUpdate();
+    if (!mounted) return;
+    if (update == null) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Você já está usando a versão mais recente.'),
+        ),
+      );
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Atualização disponível'),
+        content: Text(
+          'A versão ${update.version} está pronta para download. O Android solicitará sua confirmação antes de instalar.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Agora não'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              unawaited(_openUpdateDownload(update));
+            },
+            icon: const Icon(Icons.system_update_alt),
+            label: const Text('Baixar atualização'),
+          ),
+        ],
       ),
     );
   }
@@ -5276,6 +5339,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
         petCount: _pets.length,
         onOpenSubscription: _showSubscriptionOptions,
         onOpenNotifications: _showNotificationSettings,
+        onCheckUpdates: _showUpdateCenter,
         onOpenPrescriptions: _openPrescriptions,
         onOpenPrivacy: _showPrivacyAndData,
         onOpenHelp: _showHelp,
@@ -9052,6 +9116,7 @@ class ProfilePage extends StatelessWidget {
     this.petCount = 2,
     this.onOpenSubscription,
     this.onOpenNotifications,
+    this.onCheckUpdates,
     this.onOpenPrescriptions,
     this.onOpenPrivacy,
     this.onOpenHelp,
@@ -9075,6 +9140,7 @@ class ProfilePage extends StatelessWidget {
   final int petCount;
   final VoidCallback? onOpenSubscription;
   final VoidCallback? onOpenNotifications;
+  final VoidCallback? onCheckUpdates;
   final VoidCallback? onOpenPrescriptions;
   final VoidCallback? onOpenPrivacy;
   final VoidCallback? onOpenHelp;
@@ -9441,6 +9507,12 @@ class ProfilePage extends StatelessWidget {
                 title: 'Notificações',
                 subtitle: 'Lembretes locais e preferências',
                 onTap: onOpenNotifications,
+              ),
+              _SettingsTile(
+                icon: Icons.system_update_alt,
+                title: 'Atualizar aplicativo',
+                subtitle: 'Verificar e baixar a versão mais recente',
+                onTap: onCheckUpdates,
               ),
               _SettingsTile(
                 icon: Icons.description_outlined,

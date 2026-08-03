@@ -981,6 +981,7 @@ void main() {
 
   testWidgets('atalhos do perfil executam suas ações', (tester) async {
     var notificationsOpened = false;
+    var updatesOpened = false;
     var privacyOpened = false;
     var helpOpened = false;
     await tester.pumpWidget(
@@ -988,6 +989,7 @@ void main() {
         home: ProfilePage(
           profile: LocalProfile(name: 'Cezar', email: 'cezar@example.com'),
           onOpenNotifications: () => notificationsOpened = true,
+          onCheckUpdates: () => updatesOpened = true,
           onOpenPrivacy: () => privacyOpened = true,
           onOpenHelp: () => helpOpened = true,
         ),
@@ -997,10 +999,12 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -1200));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Notificações'));
+    await tester.tap(find.text('Atualizar aplicativo'));
     await tester.tap(find.text('Privacidade e dados'));
     await tester.tap(find.text('Ajuda'));
 
     expect(notificationsOpened, isTrue);
+    expect(updatesOpened, isTrue);
     expect(privacyOpened, isTrue);
     expect(helpOpened, isTrue);
   });

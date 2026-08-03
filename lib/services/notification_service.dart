@@ -11,8 +11,12 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
+  Future<void> Function(String payload)? _onSelectPayload;
 
-  Future<void> initialize() async {
+  Future<void> initialize({
+    Future<void> Function(String payload)? onSelectPayload,
+  }) async {
+    if (onSelectPayload != null) _onSelectPayload = onSelectPayload;
     if (_initialized) return;
 
     tz.initializeTimeZones();
@@ -34,7 +38,15 @@ class NotificationService {
     );
 
     try {
-      await _plugin.initialize(settings: settings);
+      await _plugin.initialize(
+        settings: settings,
+        onDidReceiveNotificationResponse: (response) {
+          final payload = response.payload;
+          if (payload != null && payload.isNotEmpty) {
+            _dispatchPayload(payload);
+          }
+        },
+      );
       if (!kIsWeb) {
         await _plugin
             .resolvePlatformSpecificImplementation<
@@ -48,9 +60,21 @@ class NotificationService {
             ?.requestPermissions(alert: true, badge: true, sound: true);
       }
       _initialized = true;
+      final launchDetails = await _plugin.getNotificationAppLaunchDetails();
+      final launchPayload = launchDetails?.notificationResponse?.payload;
+      if (launchDetails?.didNotificationLaunchApp == true &&
+          launchPayload != null &&
+          launchPayload.isNotEmpty) {
+        _dispatchPayload(launchPayload);
+      }
     } catch (_) {
       // A indisponibilidade do plugin não pode impedir o app offline de abrir.
     }
+  }
+
+  void _dispatchPayload(String payload) {
+    final handler = _onSelectPayload;
+    if (handler != null) handler(payload);
   }
 
   Future<void> scheduleReminder({
