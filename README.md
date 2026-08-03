@@ -14,6 +14,11 @@ Cada release publicada com uma tag `vMAJOR.MINOR.PATCH` gera automaticamente um 
 e um AAB. O AAB é o pacote destinado à Play Store; o APK é usado para instalação
 direta e homologação.
 
+O endereço permanente abaixo sempre entrega o APK da release mais recente e pode ser
+usado em QR Codes e materiais impressos:
+
+`https://github.com/cezar-fournier/aumiau-app/releases/latest/download/aumiau-latest.apk`
+
 O aplicativo consulta as Releases do GitHub ao abrir, informa quando há uma versão
 mais recente e exibe uma notificação local com o link do download. Esse mecanismo é
 um canal temporário de homologação; a distribuição oficial e as atualizações
