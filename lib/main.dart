@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,7 @@ import 'localization/app_locale_controller.dart';
 import 'localization/app_locale_scope.dart';
 import 'localization/app_localizations.dart';
 import 'services/backup_service.dart';
+import 'services/checkout_policy.dart';
 import 'services/notification_service.dart';
 import 'services/pdf_service.dart';
 import 'services/play_billing_service.dart';
@@ -3979,6 +3981,27 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
   }
 
   Future<void> _showSubscriptionOptions() async {
+    if (!allowsMercadoPagoCheckout(defaultTargetPlatform)) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('AuMiau Family no iPhone'),
+          content: const Text(
+            'A contratação do AuMiau Family no iPhone estará disponível em '
+            'breve pela App Store. Durante o beta, você pode testar normalmente '
+            'os demais recursos do AuMiau.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Entendi'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     Map<String, dynamic> catalog = const {};
     try {
       catalog = await _syncGateway.loadBillingCatalog();
@@ -4109,6 +4132,14 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
     required String planName,
     required double amount,
   }) async {
+    if (!allowsMercadoPagoCheckout(defaultTargetPlatform)) {
+      _showProductMessage(
+        'A contratação do AuMiau Family no iPhone estará disponível em breve '
+        'pela App Store.',
+      );
+      return;
+    }
+
     if (_accessToken == null) {
       await showDialog<void>(
         context: context,
