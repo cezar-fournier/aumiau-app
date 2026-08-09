@@ -26,6 +26,7 @@ jobs:
           import os
           import time
           import urllib.parse
+          import urllib.error
           import urllib.request
 
           import jwt
@@ -56,8 +57,14 @@ jobs:
                   url,
                   headers={'Authorization': f'Bearer {token}'},
               )
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  detail = error.read().decode('utf-8', errors='replace')
+                  raise RuntimeError(
+                      f'App Store Connect respondeu HTTP {error.code}: {detail}'
+                  ) from error
 
           apps = get('/v1/apps', {'filter[bundleId]': 'br.com.cainformatica.aumiau'})
           if len(apps.get('data', [])) != 1:
@@ -72,14 +79,14 @@ jobs:
               {
                   'sort': '-uploadedDate',
                   'limit': '10',
-                  'fields[buildUploads]': [
+                  'fields[buildUploads]': ','.join([
                       'cfBundleShortVersionString',
                       'cfBundleVersion',
                       'createdDate',
                       'uploadedDate',
                       'state',
                       'platform',
-                  ],
+                  ]),
               },
           )
           print(f"Uploads encontrados: {len(uploads.get('data', []))}")
@@ -100,13 +107,13 @@ jobs:
                   'filter[app]': app_id,
                   'sort': '-uploadedDate',
                   'limit': '10',
-                  'fields[builds]': [
+                  'fields[builds]': ','.join([
                       'version',
                       'uploadedDate',
                       'processingState',
                       'minOsVersion',
                       'usesNonExemptEncryption',
-                  ],
+                  ]),
               },
           )
           print(f"Builds processados encontrados: {len(builds.get('data', []))}")
