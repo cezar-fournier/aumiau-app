@@ -2,6 +2,25 @@ name: Diagnose App Store Connect upload
 
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Operação no App Store Connect'
+        required: true
+        type: choice
+        default: diagnose
+        options:
+          - diagnose
+          - create_external_group
+      external_group_name:
+        description: 'Nome do grupo externo'
+        required: false
+        type: string
+        default: 'AuMiau — Beta Externo'
+      build_number:
+        description: 'Número do build iOS que será associado'
+        required: false
+        type: string
+        default: '6'
 
 permissions:
   contents: read
@@ -19,6 +38,9 @@ jobs:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+          OPERATION: ${{ inputs.operation }}
+          EXTERNAL_GROUP_NAME: ${{ inputs.external_group_name }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           python3 - <<'PY'
           import base64
@@ -60,6 +82,27 @@ jobs:
               try:
                   with urllib.request.urlopen(request, timeout=30) as response:
                       return json.load(response)
+              except urllib.error.HTTPError as error:
+                  detail = error.read().decode('utf-8', errors='replace')
+                  raise RuntimeError(
+                      f'App Store Connect respondeu HTTP {error.code}: {detail}'
+                  ) from error
+
+          def post(path, payload):
+              url = 'https://api.appstoreconnect.apple.com' + path
+              request = urllib.request.Request(
+                  url,
+                  data=json.dumps(payload).encode('utf-8'),
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Content-Type': 'application/json',
+                  },
+                  method='POST',
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      raw = response.read()
+                      return json.loads(raw) if raw else None
               except urllib.error.HTTPError as error:
                   detail = error.read().decode('utf-8', errors='replace')
                   raise RuntimeError(
@@ -126,4 +169,92 @@ jobs:
                   'minOsVersion': attributes.get('minOsVersion'),
                   'usesNonExemptEncryption': attributes.get('usesNonExemptEncryption'),
               }, ensure_ascii=False, sort_keys=True))
+
+          if os.environ.get('OPERATION', 'diagnose') != 'create_external_group':
+              raise SystemExit(0)
+
+          group_name = os.environ.get('EXTERNAL_GROUP_NAME', '').strip()
+          build_number = os.environ.get('BUILD_NUMBER', '').strip()
+          if not group_name:
+              raise SystemExit('O nome do grupo externo não pode ficar vazio.')
+          if not build_number:
+              raise SystemExit('O número do build não pode ficar vazio.')
+
+          groups = get(
+              '/v1/betaGroups',
+              {
+                  'filter[app]': app_id,
+                  'filter[name]': group_name,
+                  'filter[isInternalGroup]': 'false',
+                  'limit': '10',
+              },
+          )
+          matching_groups = groups.get('data', [])
+          if len(matching_groups) > 1:
+              raise SystemExit(
+                  f'Foram encontrados {len(matching_groups)} grupos externos com o mesmo nome.'
+              )
+
+          if matching_groups:
+              group_id = matching_groups[0]['id']
+              print(f'Grupo externo já existente: {group_name}')
+          else:
+              created_group = post(
+                  '/v1/betaGroups',
+                  {
+                      'data': {
+                          'type': 'betaGroups',
+                          'attributes': {
+                              'name': group_name,
+                              'isInternalGroup': False,
+                              'feedbackEnabled': True,
+                          },
+                          'relationships': {
+                              'app': {
+                                  'data': {
+                                      'type': 'apps',
+                                      'id': app_id,
+                                  },
+                              },
+                          },
+                      },
+                  },
+              )
+              group_id = created_group['data']['id']
+              print(f'Grupo externo criado: {group_name}')
+
+          selected_builds = [
+              build for build in builds.get('data', [])
+              if build.get('attributes', {}).get('version') == build_number
+              and build.get('attributes', {}).get('processingState') == 'VALID'
+          ]
+          if len(selected_builds) != 1:
+              raise SystemExit(
+                  f'Esperado um build válido com número {build_number}; '
+                  f'encontrados {len(selected_builds)}.'
+              )
+          build_id = selected_builds[0]['id']
+
+          linked_builds = get(
+              f'/v1/betaGroups/{group_id}/relationships/builds',
+              {'limit': '200'},
+          )
+          linked_ids = {item['id'] for item in linked_builds.get('data', [])}
+          if build_id in linked_ids:
+              print(f'Build {build_number} já associado ao grupo externo.')
+          else:
+              post(
+                  f'/v1/betaGroups/{group_id}/relationships/builds',
+                  {
+                      'data': [
+                          {
+                              'type': 'builds',
+                              'id': build_id,
+                          },
+                      ],
+                  },
+              )
+              print(f'Build {build_number} associado ao grupo externo.')
+
+          print('Criação idempotente do grupo externo concluída.')
           PY
