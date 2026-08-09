@@ -28,6 +28,12 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>O AuMiau usa sua localização para encontrar parceiros e atendimentos próximos.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>O AuMiau usa sua localização para encontrar parceiros e atendimentos próximos, inclusive quando um recurso de localização estiver ativo.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>O AuMiau usa a câmera para fotografar documentos, registros do pet e imagens necessárias aos atendimentos.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>O AuMiau acessa sua biblioteca de fotos para selecionar documentos e imagens do pet que você decidir enviar.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
