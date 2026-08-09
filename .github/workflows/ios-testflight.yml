@@ -162,10 +162,17 @@ jobs:
           path = Path('ios/Runner.xcodeproj/project.pbxproj')
           text = path.read_text()
           team = os.environ['APPLE_TEAM_ID']
+          profile = os.environ['IOS_PROFILE_NAME']
           marker = 'PRODUCT_BUNDLE_IDENTIFIER = br.com.cainformatica.aumiau;'
           if marker not in text:
               raise SystemExit('Bundle ID principal não encontrado no projeto Xcode.')
-          text = text.replace(marker, f'DEVELOPMENT_TEAM = {team};\n\t\t\t\t{marker}')
+          signing = (
+              'CODE_SIGN_IDENTITY = "Apple Distribution";\n\t\t\t\t'
+              'CODE_SIGN_STYLE = Manual;\n\t\t\t\t'
+              f'DEVELOPMENT_TEAM = {team};\n\t\t\t\t'
+              f'PROVISIONING_PROFILE_SPECIFIER = "{profile}";\n\t\t\t\t'
+          )
+          text = text.replace(marker, signing + marker)
           path.write_text(text)
           PY
 
