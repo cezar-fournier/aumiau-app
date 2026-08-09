@@ -26,6 +26,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>O AuMiau usa sua localização para encontrar parceiros e atendimentos próximos.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
