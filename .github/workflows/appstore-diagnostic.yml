@@ -178,6 +178,7 @@ jobs:
                       'processingState',
                       'minOsVersion',
                       'usesNonExemptEncryption',
+                      'betaReviewState',
                   ]),
               },
           )
@@ -190,6 +191,7 @@ jobs:
                   'processingState': attributes.get('processingState'),
                   'minOsVersion': attributes.get('minOsVersion'),
                   'usesNonExemptEncryption': attributes.get('usesNonExemptEncryption'),
+                  'betaReviewState': attributes.get('betaReviewState'),
               }, ensure_ascii=False, sort_keys=True))
 
           operation = os.environ.get('OPERATION', 'diagnose')
