@@ -178,7 +178,6 @@ jobs:
                       'processingState',
                       'minOsVersion',
                       'usesNonExemptEncryption',
-                      'betaReviewState',
                   ]),
               },
           )
@@ -191,7 +190,30 @@ jobs:
                   'processingState': attributes.get('processingState'),
                   'minOsVersion': attributes.get('minOsVersion'),
                   'usesNonExemptEncryption': attributes.get('usesNonExemptEncryption'),
-                  'betaReviewState': attributes.get('betaReviewState'),
+              }, ensure_ascii=False, sort_keys=True))
+
+          diagnostic_build_number = os.environ.get('BUILD_NUMBER', '').strip()
+          diagnostic_builds = [
+              build for build in builds.get('data', [])
+              if build.get('attributes', {}).get('version') == diagnostic_build_number
+          ]
+          if len(diagnostic_builds) == 1:
+              submission = get(
+                  f"/v1/builds/{diagnostic_builds[0]['id']}/betaAppReviewSubmission",
+                  {
+                      'fields[betaAppReviewSubmissions]': (
+                          'betaReviewState,submittedDate'
+                      ),
+                  },
+              )
+              print(json.dumps({
+                  'build': diagnostic_build_number,
+                  'betaReviewState': submission['data']['attributes'].get(
+                      'betaReviewState'
+                  ),
+                  'submittedDate': submission['data']['attributes'].get(
+                      'submittedDate'
+                  ),
               }, ensure_ascii=False, sort_keys=True))
 
           operation = os.environ.get('OPERATION', 'diagnose')
