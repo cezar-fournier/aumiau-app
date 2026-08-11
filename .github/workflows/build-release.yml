@@ -108,6 +108,7 @@ jobs:
             "--build-number=$build_number"
             "--dart-define=AUMIAU_API_BASE_URL=https://aumiau.app.br/"
             "--dart-define=AUMIAU_APP_VERSION=$version"
+            "--dart-define=AUMIAU_DISTRIBUTION=direct"
           )
           flutter build appbundle "${common_args[@]}"
           flutter build apk "${common_args[@]}"
