@@ -47,6 +47,8 @@ from app.mfa import (
     verify_totp,
 )
 from app.migrations import apply_migrations
+from app.account_deletion import delete_account_data
+from app.legal_pages import account_deletion_html, privacy_policy_html
 from app.observability import RequestMetrics, configure_json_logger, monotonic_seconds, resolve_request_id
 from app.play_billing import (
     GooglePlayClient,
@@ -330,6 +332,11 @@ class EmailVerificationRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refreshToken: str = Field(min_length=32, max_length=256)
+
+
+class AccountDeletionRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+    confirmation: str = Field(min_length=1, max_length=20)
 
 
 class PasswordResetRequest(BaseModel):
@@ -1425,6 +1432,24 @@ def startup() -> None:
     initialize_with_retry()
 
 
+@app.get("/privacidade", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+def privacy_policy() -> HTMLResponse:
+    return HTMLResponse(
+        content=privacy_policy_html(),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.get("/excluir-conta", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/delete-account", response_class=HTMLResponse, include_in_schema=False)
+def account_deletion_page() -> HTMLResponse:
+    return HTMLResponse(
+        content=account_deletion_html(),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     try:
@@ -2052,6 +2077,48 @@ def logout(user: dict[str, Any] = Depends(current_user)) -> dict[str, str]:
                 (user["jti"],),
             )
     return {"status": "ok"}
+
+
+@app.post("/account/delete")
+def delete_account(
+    request: AccountDeletionRequest,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, str]:
+    if request.confirmation.strip().upper() != "EXCLUIR":
+        raise HTTPException(status_code=400, detail="Digite EXCLUIR para confirmar.")
+    user_id = int(user["sub"])
+    with database_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT password_hash, is_admin, deleted_at FROM users WHERE id = %s FOR UPDATE",
+                (user_id,),
+            )
+            account = cursor.fetchone()
+            if account is None or account[2] is not None:
+                raise HTTPException(status_code=404, detail="Conta não encontrada.")
+            if account[1]:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Contas administrativas não podem ser excluídas por este fluxo.",
+                )
+            if not check_password(request.password, account[0]):
+                raise HTTPException(status_code=401, detail="Senha incorreta.")
+            document_storage_keys = delete_account_data(
+                cursor,
+                user_id=user_id,
+                password_hash=hash_password(secrets.token_urlsafe(48)),
+            )
+    for storage_key in document_storage_keys:
+        try:
+            resolve_storage_path(PARTNER_DOCUMENTS_DIR, storage_key).unlink(missing_ok=True)
+        except (InvalidDocument, OSError) as error:
+            logger.warning(
+                "account_deletion_document_cleanup_failed user_id=%s key=%s error=%s",
+                user_id,
+                storage_key,
+                error,
+            )
+    return {"status": "deleted"}
 
 
 @app.get("/account/status")

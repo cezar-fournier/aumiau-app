@@ -1152,6 +1152,13 @@ class _FakeSyncGateway implements SyncGateway {
   Future<void> logout({required String accessToken}) async {}
 
   @override
+  Future<void> deleteAccount({
+    required String accessToken,
+    required String password,
+    required String confirmation,
+  }) async {}
+
+  @override
   Future<RemoteSnapshot> pullSnapshot({required String accessToken}) async =>
       remoteSnapshot ?? const RemoteSnapshot(snapshot: null, revision: 0);
 

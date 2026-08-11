@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,7 @@ import 'localization/app_locale_controller.dart';
 import 'localization/app_locale_scope.dart';
 import 'localization/app_localizations.dart';
 import 'services/backup_service.dart';
+import 'services/checkout_policy.dart';
 import 'services/notification_service.dart';
 import 'services/pdf_service.dart';
 import 'services/play_billing_service.dart';
@@ -3979,6 +3981,27 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
   }
 
   Future<void> _showSubscriptionOptions() async {
+    if (!allowsMercadoPagoCheckout(defaultTargetPlatform)) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('AuMiau Family no iPhone'),
+          content: const Text(
+            'A contratação do AuMiau Family no iPhone estará disponível em '
+            'breve pela App Store. Durante o beta, você pode testar normalmente '
+            'os demais recursos do AuMiau.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Entendi'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
     Map<String, dynamic> catalog = const {};
     try {
       catalog = await _syncGateway.loadBillingCatalog();
@@ -4109,6 +4132,14 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
     required String planName,
     required double amount,
   }) async {
+    if (!allowsMercadoPagoCheckout(defaultTargetPlatform)) {
+      _showProductMessage(
+        'A contratação do AuMiau Family no iPhone estará disponível em breve '
+        'pela App Store.',
+      );
+      return;
+    }
+
     if (_accessToken == null) {
       await showDialog<void>(
         context: context,
@@ -5070,6 +5101,15 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
           ),
         ),
         actions: [
+          if (_accessToken != null)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                unawaited(_showDeleteAccount());
+              },
+              style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
+              child: const Text('Excluir minha conta'),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Fechar'),
@@ -5084,6 +5124,111 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
         ],
       ),
     );
+  }
+
+  Future<void> _showDeleteAccount() async {
+    final passwordController = TextEditingController();
+    final confirmationController = TextEditingController();
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Excluir minha conta?'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Esta ação é permanente. Seus dados operacionais serão excluídos ou '
+                  'anonimizados. Registros fiscais, de auditoria e documentos clínicos '
+                  'podem ser conservados pelo prazo legal aplicável.',
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: passwordController,
+                  obscureText: true,
+                  autofillHints: const [AutofillHints.password],
+                  decoration: const InputDecoration(labelText: 'Senha atual'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: confirmationController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(
+                    labelText: 'Digite EXCLUIR para confirmar',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.red.shade700,
+              ),
+              child: const Text('Excluir permanentemente'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      final password = passwordController.text;
+      final confirmation = confirmationController.text.trim().toUpperCase();
+      if (password.isEmpty || confirmation != 'EXCLUIR') {
+        _showProductMessage(
+          'Informe sua senha e digite EXCLUIR para confirmar.',
+        );
+        return;
+      }
+      final storedSession = await _sessionStore.read();
+      final accessToken = _accessToken ?? storedSession?.accessToken;
+      if (accessToken == null) {
+        _showProductMessage(
+          'Entre novamente na conta antes de solicitar a exclusão.',
+        );
+        return;
+      }
+      setState(() => _syncing = true);
+      try {
+        await _syncGateway.deleteAccount(
+          accessToken: accessToken,
+          password: password,
+          confirmation: confirmation,
+        );
+        await _database.clearAllUserData();
+        await _sessionStore.clear();
+        await _sessionStore.clearPartnerDraft(_draftOwner);
+        _accessToken = null;
+        await _switchDatabaseForAccount(null);
+        await _loadData();
+        await NotificationService.instance.scheduleFamilyExpiryWarning(
+          validUntil: null,
+        );
+        if (!mounted) return;
+        setState(() {
+          _authScreen = _AuthScreen.welcome;
+          _showAuthGate = true;
+          _showProfileChooser = false;
+          _activeMode = _AppMode.client;
+          _selectedIndex = 0;
+        });
+        _showProductMessage('Conta excluída permanentemente.');
+      } on SyncGatewayException catch (error) {
+        if (mounted) _showProductMessage(error.message);
+      } finally {
+        if (mounted) setState(() => _syncing = false);
+      }
+    } finally {
+      passwordController.dispose();
+      confirmationController.dispose();
+    }
   }
 
   Future<void> _showHelp() async {
