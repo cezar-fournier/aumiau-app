@@ -1,0 +1,93 @@
+name: Build AuMiau for Google Play
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-google-play:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze lib test
+
+      - name: Test
+        run: flutter test
+
+      - name: Validate production signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Secret $name não configurado. O AAB da Play exige assinatura de produção."
+              exit 1
+            fi
+          done
+
+      - name: Configure Android production signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/aumiau-release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/aumiau-release.jks"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=$ANDROID_KEY_PASSWORD"
+          } > android/key.properties
+
+      - name: Build signed Google Play AAB
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version: \([^+]*\)+.*/\1/p' pubspec.yaml)"
+          build_number="$(sed -n 's/^version: .*+//p' pubspec.yaml)"
+          flutter build appbundle \
+            --release \
+            --build-name="$version" \
+            --build-number="$build_number" \
+            --dart-define=AUMIAU_API_BASE_URL=https://aumiau.app.br/ \
+            --dart-define=AUMIAU_APP_VERSION="$version" \
+            --dart-define=AUMIAU_DISTRIBUTION=google_play
+          cp build/app/outputs/bundle/release/app-release.aab \
+            "build/app/outputs/bundle/release/aumiau-google-play-${version}+${build_number}.aab"
+
+      - name: Verify Google Play distribution marker
+        run: |
+          set -euo pipefail
+          grep -q "AUMIAU_DISTRIBUTION=google_play" .github/workflows/google-play.yml
+          ! grep -q "AUMIAU_DISTRIBUTION=direct" .github/workflows/google-play.yml
+
+      - name: Upload Google Play artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aumiau-google-play
+          path: build/app/outputs/bundle/release/aumiau-google-play-*.aab
+          if-no-files-found: error
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f android/key.properties "$RUNNER_TEMP/aumiau-release.jks"

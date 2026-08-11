@@ -792,9 +792,7 @@ class PersistentHomeShell extends StatefulWidget {
 
 class _PersistentHomeShellState extends State<PersistentHomeShell>
     with WidgetsBindingObserver {
-  // Temporariamente desativado até a conta Google Play Console estar ativa.
-  // O código permanece preparado para reativação controlada posteriormente.
-  static const bool _googlePlayBillingEnabled = false;
+  static const bool _googlePlayBillingEnabled = isGooglePlayDistribution;
   int _selectedIndex = 0;
   late AppDatabase _database;
   String? _databaseAccountEmail;
@@ -3981,6 +3979,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
   }
 
   Future<void> _showSubscriptionOptions() async {
+    if (allowsGooglePlayBilling(defaultTargetPlatform)) {
+      await _showGooglePlaySubscriptionOptions();
+      return;
+    }
     if (!allowsMercadoPagoCheckout(defaultTargetPlatform)) {
       await showDialog<void>(
         context: context,
@@ -4121,6 +4123,108 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Entendi'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showGooglePlaySubscriptionOptions() async {
+    if (_accessToken == null) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Conta necessária'),
+          content: const Text(
+            'Para assinar o AuMiau Family, entre ou crie uma conta. Assim a '
+            'assinatura será vinculada com segurança ao seu perfil.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _openAuth(_AuthScreen.login);
+              },
+              child: const Text('Entrar'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _openAuth(_AuthScreen.register);
+              },
+              child: const Text('Criar conta'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    _showProductMessage('Consultando planos no Google Play...');
+    final products = await _playBilling.loadProducts();
+    if (!mounted) return;
+    if (products.isEmpty) {
+      _showProductMessage(
+        'Os planos ainda não estão disponíveis no Google Play. Tente novamente em instantes.',
+      );
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('AuMiau Family'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final productId in PlayBillingService.productIds)
+              if (products[productId] case final product?)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    productId == 'family_monthly'
+                        ? Icons.calendar_month_outlined
+                        : Icons.event_available_outlined,
+                    color: _forest,
+                  ),
+                  title: Text(
+                    productId == 'family_monthly'
+                        ? 'Plano mensal'
+                        : 'Plano anual',
+                  ),
+                  subtitle: const Text('Assinatura pelo Google Play'),
+                  trailing: Text(product.price),
+                  onTap: () async {
+                    final started = await _playBilling.purchase(
+                      product,
+                      accountName: _databaseAccountEmail,
+                    );
+                    if (dialogContext.mounted) {
+                      Navigator.pop(dialogContext);
+                    }
+                    _showProductMessage(
+                      started
+                          ? 'Confirme a assinatura na janela do Google Play.'
+                          : 'Não foi possível iniciar a assinatura.',
+                    );
+                  },
+                ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await _playBilling.restore();
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
+              _showProductMessage(
+                'Consultando compras anteriores no Google Play...',
+              );
+            },
+            child: const Text('Restaurar compras'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Fechar'),
           ),
         ],
       ),
