@@ -107,6 +107,12 @@ abstract interface class SyncGateway {
 
   Future<void> logout({required String accessToken});
 
+  Future<void> deleteAccount({
+    required String accessToken,
+    required String password,
+    required String confirmation,
+  });
+
   Future<SyncBatchAck> pushBatch({
     required Map<String, dynamic> payload,
     required String accessToken,
@@ -228,6 +234,19 @@ class HttpSyncGateway implements SyncGateway {
   @override
   Future<void> logout({required String accessToken}) async {
     await _post('auth/logout', body: const {}, accessToken: accessToken);
+  }
+
+  @override
+  Future<void> deleteAccount({
+    required String accessToken,
+    required String password,
+    required String confirmation,
+  }) async {
+    await _post(
+      'account/delete',
+      body: {'password': password, 'confirmation': confirmation},
+      accessToken: accessToken,
+    );
   }
 
   Future<Map<String, dynamic>> submitPartnerProfile({

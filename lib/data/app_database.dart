@@ -209,6 +209,23 @@ final class AppDatabase extends _$AppDatabase {
 
   final bool seedDemoData;
 
+  Future<void> clearAllUserData() async {
+    await transaction(() async {
+      await delete(syncOperations).go();
+      await delete(syncStates).go();
+      await delete(weightEntries).go();
+      await delete(vaccines).go();
+      await delete(preventiveRecords).go();
+      await delete(medicationPlans).go();
+      await delete(familyInvitations).go();
+      await delete(appointments).go();
+      await delete(veterinaryContacts).go();
+      await delete(reminders).go();
+      await delete(pets).go();
+      await delete(userProfiles).go();
+    });
+  }
+
   @override
   int get schemaVersion => 13;
 
