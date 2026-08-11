@@ -78,8 +78,11 @@ jobs:
       - name: Verify Google Play distribution marker
         run: |
           set -euo pipefail
-          grep -q "AUMIAU_DISTRIBUTION=google_play" .github/workflows/google-play.yml
-          ! grep -q "AUMIAU_DISTRIBUTION=direct" .github/workflows/google-play.yml
+          count="$(grep -c -- '--dart-define=AUMIAU_DISTRIBUTION=google_play' .github/workflows/google-play.yml)"
+          if [[ "$count" -ne 1 ]]; then
+            echo "::error::O workflow precisa conter exatamente um marcador google_play."
+            exit 1
+          fi
 
       - name: Upload Google Play artifact
         uses: actions/upload-artifact@v4
