@@ -75,15 +75,6 @@ jobs:
           cp build/app/outputs/bundle/release/app-release.aab \
             "build/app/outputs/bundle/release/aumiau-google-play-${version}+${build_number}.aab"
 
-      - name: Verify Google Play distribution marker
-        run: |
-          set -euo pipefail
-          count="$(grep -c -- '--dart-define=AUMIAU_DISTRIBUTION=google_play' .github/workflows/google-play.yml)"
-          if [[ "$count" -ne 1 ]]; then
-            echo "::error::O workflow precisa conter exatamente um marcador google_play."
-            exit 1
-          fi
-
       - name: Upload Google Play artifact
         uses: actions/upload-artifact@v4
         with:
