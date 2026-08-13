@@ -2,9 +2,6 @@ name: Build AuMiau for Google Play
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - agent/google-play-closed-test
 
 permissions:
   contents: read
@@ -62,6 +59,27 @@ jobs:
             echo "keyAlias=$ANDROID_KEY_ALIAS"
             echo "keyPassword=$ANDROID_KEY_PASSWORD"
           } > android/key.properties
+
+      - name: Verify official AuMiau upload certificate
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          AUMIAU_EXPECTED_UPLOAD_SHA1: 87:3A:E5:86:CA:E7:DA:EF:F2:37:7A:3B:41:91:08:14:7D:3A:C4:3E
+        run: |
+          set -euo pipefail
+          actual_sha1="$(
+            keytool -list -v \
+              -keystore "$RUNNER_TEMP/aumiau-release.jks" \
+              -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+              -alias "$ANDROID_KEY_ALIAS" |
+            sed -n 's/^[[:space:]]*SHA1:[[:space:]]*//p' |
+            head -n 1 |
+            tr '[:lower:]' '[:upper:]'
+          )"
+          if [[ "$actual_sha1" != "$AUMIAU_EXPECTED_UPLOAD_SHA1" ]]; then
+            echo "::error::A chave configurada não é a chave oficial de upload do AuMiau. Build bloqueado."
+            exit 1
+          fi
 
       - name: Build signed Google Play AAB
         run: |
