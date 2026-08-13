@@ -842,8 +842,19 @@ final class AppDatabase extends _$AppDatabase {
   }
 
   Future<void> updatePetName(int id, String name) async {
+    final pet = await (select(
+      pets,
+    )..where((row) => row.id.equals(id))).getSingle();
+    await updatePetProfile(id, name: name, photoData: pet.photoData);
+  }
+
+  Future<void> updatePetProfile(
+    int id, {
+    required String name,
+    required String? photoData,
+  }) async {
     await (update(pets)..where((row) => row.id.equals(id))).write(
-      PetsCompanion(name: Value(name)),
+      PetsCompanion(name: Value(name), photoData: Value(photoData)),
     );
     await _recordPetSync(id, 'update');
   }

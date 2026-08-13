@@ -226,7 +226,7 @@ class Pet {
   final String clinicReference;
   final String veterinarianReference;
   final String documentNotes;
-  final String? photoData;
+  String? photoData;
   final List<VaccineRecord> vaccines;
   final List<WeightRecord> weights;
   final List<PreventiveRecord> preventives;
@@ -1358,42 +1358,121 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
 
   Future<void> _editPet(Pet pet) async {
     final controller = TextEditingController(text: pet.name);
-    final name = await showDialog<String>(
+    var photoData = pet.photoData;
+    final result = await showDialog<({String name, String? photoData})>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text('Editar ${pet.name}'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Nome do pet'),
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Editar ${pet.name}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 42,
+                  backgroundColor: _mango.withValues(alpha: .3),
+                  backgroundImage: photoData == null
+                      ? null
+                      : MemoryImage(base64Decode(photoData!)),
+                  child: photoData == null
+                      ? Text(pet.emoji, style: const TextStyle(fontSize: 40))
+                      : null,
+                ),
+                if (_profile.isFamily) ...[
+                  const SizedBox(height: 12),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          final selected = await FilePicker.pickFiles(
+                            type: FileType.image,
+                            withData: true,
+                          );
+                          final bytes = selected?.files.single.bytes;
+                          if (bytes == null) return;
+                          if (bytes.length > 2 * 1024 * 1024) {
+                            if (context.mounted) {
+                              _showProductMessage(
+                                'A foto deve ter no máximo 2 MB.',
+                              );
+                            }
+                            return;
+                          }
+                          setDialogState(() => photoData = base64Encode(bytes));
+                        },
+                        icon: const Icon(Icons.add_a_photo_outlined),
+                        label: Text(
+                          photoData == null ? 'Adicionar foto' : 'Trocar foto',
+                        ),
+                      ),
+                      if (photoData != null)
+                        TextButton.icon(
+                          onPressed: () =>
+                              setDialogState(() => photoData = null),
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('Remover foto'),
+                        ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
+                TextField(
+                  controller: controller,
+                  autofocus: photoData == null,
+                  decoration: const InputDecoration(labelText: 'Nome do pet'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = controller.text.trim();
+                if (name.isEmpty) return;
+                Navigator.pop(dialogContext, (
+                  name: name,
+                  photoData: photoData,
+                ));
+              },
+              child: const Text('Salvar'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, controller.text.trim()),
-            child: const Text('Salvar'),
-          ),
-        ],
       ),
     );
     controller.dispose();
-    if (name == null || name.isEmpty || name == pet.name || pet.id == null) {
+    if (result == null || pet.id == null) {
       return;
     }
+    final nameChanged = result.name != pet.name;
+    final photoChanged = result.photoData != pet.photoData;
+    if (!nameChanged && !photoChanged) return;
     final oldName = pet.name;
-    await _database.updatePetName(pet.id!, name);
-    await _database.updateReminderPetName(pet.id!, name);
+    await _database.updatePetProfile(
+      pet.id!,
+      name: result.name,
+      photoData: result.photoData,
+    );
+    if (nameChanged) {
+      await _database.updateReminderPetName(pet.id!, result.name);
+    }
     if (!mounted) return;
     setState(() {
-      pet.name = name;
-      for (final reminder in _reminders.where(
-        (item) => item.petName == oldName,
-      )) {
-        reminder.petName = name;
+      pet.name = result.name;
+      pet.photoData = result.photoData;
+      if (nameChanged) {
+        for (final reminder in _reminders.where(
+          (item) => item.petName == oldName,
+        )) {
+          reminder.petName = result.name;
+        }
       }
     });
   }
@@ -10134,7 +10213,7 @@ class _PetCard extends StatelessWidget {
                       if (onEdit != null)
                         const PopupMenuItem(
                           value: 'edit',
-                          child: Text('Editar nome'),
+                          child: Text('Editar pet'),
                         ),
                       if (onDelete != null)
                         const PopupMenuItem(
