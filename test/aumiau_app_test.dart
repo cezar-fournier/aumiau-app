@@ -634,6 +634,37 @@ void main() {
     await database.close();
   });
 
+  test('atualiza e remove a foto do pet com sincronização', () async {
+    final database = AppDatabase.fromExecutor(
+      NativeDatabase.memory(),
+      seedDemoData: false,
+    );
+    final gateway = _FakeSyncGateway();
+    final petId = await database.addPet(
+      name: 'Nina',
+      species: 'Gata',
+      breed: 'SRD',
+      emoji: '🐱',
+      photoData: 'AQID',
+    );
+
+    await database.updatePetProfile(petId, name: 'Nina', photoData: 'BAUG');
+    expect((await database.loadPets()).single.photoData, 'BAUG');
+
+    await SyncService(
+      database,
+    ).synchronize(gateway: gateway, accessToken: 'token');
+    expect(
+      (gateway.receivedEntityChanges.single['payload'] as Map)['photoData'],
+      'BAUG',
+    );
+
+    await database.updatePetProfile(petId, name: 'Nina', photoData: null);
+    expect((await database.loadPets()).single.photoData, equals(null));
+
+    await database.close();
+  });
+
   test('propaga exclusão de pet por tombstone', () async {
     final gateway = _FakeSyncGateway();
     final firstDevice = AppDatabase.fromExecutor(

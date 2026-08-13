@@ -18,12 +18,17 @@ val releaseStoreFile = signingProperties["storeFile"] as String?
 val releaseStorePassword = signingProperties["storePassword"] as String?
 val releaseKeyAlias = signingProperties["keyAlias"] as String?
 val releaseKeyPassword = signingProperties["keyPassword"] as String?
+val environment = System.getenv()
+val resolvedReleaseStoreFile = releaseStoreFile ?: environment["AUMIAU_ANDROID_STORE_FILE"]
+val resolvedReleaseStorePassword = releaseStorePassword ?: environment["AUMIAU_ANDROID_STORE_PASSWORD"]
+val resolvedReleaseKeyAlias = releaseKeyAlias ?: environment["AUMIAU_ANDROID_KEY_ALIAS"]
+val resolvedReleaseKeyPassword = releaseKeyPassword ?: environment["AUMIAU_ANDROID_KEY_PASSWORD"]
 val hasReleaseSigning = listOf(
-    releaseStoreFile,
-    releaseStorePassword,
-    releaseKeyAlias,
-    releaseKeyPassword,
-).all { !it.isNullOrBlank() } && releaseStoreFile?.let(::File)?.exists() == true
+    resolvedReleaseStoreFile,
+    resolvedReleaseStorePassword,
+    resolvedReleaseKeyAlias,
+    resolvedReleaseKeyPassword,
+).all { !it.isNullOrBlank() } && resolvedReleaseStoreFile?.let(::File)?.exists() == true
 
 android {
     namespace = "com.aumiau.aumiau_app"
@@ -50,10 +55,10 @@ android {
     if (hasReleaseSigning) {
         signingConfigs {
             create("release") {
-                storeFile = file(releaseStoreFile!!)
-                storePassword = releaseStorePassword!!
-                keyAlias = releaseKeyAlias!!
-                keyPassword = releaseKeyPassword!!
+                storeFile = file(resolvedReleaseStoreFile!!)
+                storePassword = resolvedReleaseStorePassword!!
+                keyAlias = resolvedReleaseKeyAlias!!
+                keyPassword = resolvedReleaseKeyPassword!!
             }
         }
     }
