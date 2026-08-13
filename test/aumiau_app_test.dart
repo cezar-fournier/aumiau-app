@@ -12,7 +12,6 @@ import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:aumiau_app/services/update_service.dart';
 
 void main() {
@@ -1009,84 +1008,10 @@ void main() {
     expect(helpOpened, isTrue);
   });
 
-  test('identifica nova versão publicada no GitHub', () {
-    final service = UpdateService(client: _FakeHttpClient());
-    expect(
-      service.parseRelease({
-        'tag_name': 'v0.3.6',
-        'html_url':
-            'https://github.com/cezar-fournier/aumiau-app/releases/tag/v0.3.6',
-        'assets': const [],
-      }),
-      equals(null),
-    );
-    final update = service.parseRelease({
-      'tag_name': 'v9.2.0',
-      'html_url':
-          'https://github.com/cezar-fournier/aumiau-app/releases/tag/v9.2.0',
-      'body': 'Melhorias',
-      'assets': [
-        {
-          'name': 'aumiau-v9.2.0.apk',
-          'browser_download_url':
-              'https://github.com/cezar-fournier/aumiau-app/releases/download/v9.2.0/aumiau.apk',
-        },
-      ],
-    });
-
-    expect(update?.version, '9.2.0');
-    expect(update?.downloadUrl, contains('.apk'));
-    expect(UpdateService.compareVersions('1.2.0', '1.1.9'), greaterThan(0));
-    expect(
-      UpdateService.compareVersions('0.6.0-beta.5', '0.6.0-beta.2'),
-      greaterThan(0),
-    );
-    expect(
-      UpdateService.compareVersions('0.6.0', '0.6.0-beta.5'),
-      greaterThan(0),
-    );
+  test('canal de atualização não usa mais GitHub Releases', () {
+    const service = UpdateService();
+    expect(service.usesGooglePlayUpdates, isFalse);
   });
-
-  test('canal beta considera releases preliminares e ignora rascunhos', () {
-    final service = UpdateService(client: _FakeHttpClient());
-    final update = service.parseReleases([
-      {
-        'tag_name': 'v0.6.0-beta.5',
-        'html_url': 'https://example.invalid/beta5',
-        'prerelease': true,
-        'draft': false,
-        'assets': [
-          {
-            'name': 'aumiau-v0.6.0-beta.5.apk',
-            'browser_download_url': 'https://example.invalid/beta5.apk',
-          },
-        ],
-      },
-      {
-        'tag_name': 'v0.7.0-beta.1',
-        'html_url': 'https://example.invalid/draft',
-        'prerelease': true,
-        'draft': true,
-        'assets': const [],
-      },
-      {
-        'tag_name': 'v0.5.0',
-        'html_url': 'https://example.invalid/stable',
-        'prerelease': false,
-        'draft': false,
-        'assets': const [],
-      },
-    ], currentVersion: '0.6.0-beta.2');
-    expect(update?.version, '0.6.0-beta.5');
-    expect(update?.downloadUrl, endsWith('.apk'));
-  });
-}
-
-class _FakeHttpClient extends http.BaseClient {
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) async {
-    return http.StreamedResponse(const Stream.empty(), 200);
-  }
 }
 
 class _FakeSyncGateway implements SyncGateway {

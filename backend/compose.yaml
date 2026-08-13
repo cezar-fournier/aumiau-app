@@ -38,6 +38,8 @@ services:
       MERCADOPAGO_ENVIRONMENT: ${MERCADOPAGO_ENVIRONMENT:-test}
       MERCADOPAGO_TEST_PAYER_EMAIL: ${MERCADOPAGO_TEST_PAYER_EMAIL:-test_user_br@testuser.com}
       MERCADOPAGO_NOTIFICATION_URL: ${MERCADOPAGO_NOTIFICATION_URL:-https://aumiau.app.br/webhooks/mercadopago}
+      GOOGLE_PLAY_PACKAGE_NAME: ${GOOGLE_PLAY_PACKAGE_NAME:-com.aumiau.aumiau_app}
+      GOOGLE_PLAY_SERVICE_ACCOUNT_FILE: /run/secrets/google-play-service-account.json
       AUMIAU_BOOTSTRAP_EMAIL: ${AUMIAU_BOOTSTRAP_EMAIL:?defina AUMIAU_BOOTSTRAP_EMAIL}
       AUMIAU_BOOTSTRAP_PASSWORD: ${AUMIAU_BOOTSTRAP_PASSWORD:?defina AUMIAU_BOOTSTRAP_PASSWORD}
     depends_on:
@@ -45,6 +47,7 @@ services:
         condition: service_healthy
     volumes:
       - partner_documents:/data/partner-documents
+      - ${GOOGLE_PLAY_SERVICE_ACCOUNT_HOST_FILE:-/etc/aumiau/google-play-service-account.json}:/run/secrets/google-play-service-account.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s

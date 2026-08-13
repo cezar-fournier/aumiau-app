@@ -122,22 +122,6 @@ class NotificationService {
     await _plugin.cancel(id: _dayBeforeId(reminderId));
   }
 
-  Future<void> showUpdateAvailable({
-    required String version,
-    required String downloadUrl,
-  }) async {
-    if (kIsWeb) return;
-    await initialize();
-    if (!_initialized) return;
-    await _plugin.show(
-      id: 9001,
-      title: 'Nova versão do AuMiau disponível',
-      body: 'Versão $version pronta para baixar pelo GitHub.',
-      notificationDetails: _updateDetails,
-      payload: downloadUrl,
-    );
-  }
-
   Future<bool> requestPermission() async {
     if (kIsWeb) return false;
     await initialize();
@@ -221,26 +205,6 @@ class NotificationService {
       'aumiau_cuidados',
       'Cuidados dos pets',
       channelDescription: 'Lembretes de vacinas, medicamentos e rotinas.',
-      importance: Importance.high,
-      priority: Priority.high,
-    ),
-    iOS: DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    ),
-    macOS: DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    ),
-  );
-
-  static const _updateDetails = NotificationDetails(
-    android: AndroidNotificationDetails(
-      'aumiau_atualizacoes',
-      'Atualizações do AuMiau',
-      channelDescription: 'Avisos de novas versões do aplicativo.',
       importance: Importance.high,
       priority: Priority.high,
     ),

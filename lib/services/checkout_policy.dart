@@ -2,11 +2,12 @@ import 'package:flutter/foundation.dart';
 
 /// Canal usado para distribuir o binário atual.
 ///
-/// O valor padrão mantém o beta Android instalado diretamente. O workflow da
-/// Google Play precisa informar `AUMIAU_DISTRIBUTION=google_play`.
+/// O valor padrão é reservado a builds locais de desenvolvimento. Todo binário
+/// distribuído ao público precisa declarar a loja oficial correspondente; o
+/// workflow Android informa `AUMIAU_DISTRIBUTION=google_play`.
 const String appDistribution = String.fromEnvironment(
   'AUMIAU_DISTRIBUTION',
-  defaultValue: 'direct',
+  defaultValue: 'development',
 );
 
 const bool isGooglePlayDistribution = appDistribution == 'google_play';

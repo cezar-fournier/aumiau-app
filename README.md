@@ -2,37 +2,25 @@
 
 Aplicativo Flutter para rotina, saúde e histórico dos pets em um só lugar.
 
-## Download e atualizações para testes
+## Distribuição e atualizações
 
-Enquanto o cadastro da empresa e o D-U-N-S Number para a Google Play Store estão em
-andamento, o canal provisório de distribuição do Android fica no GitHub:
+Os únicos canais destinados aos usuários são:
 
-- Repositório: https://github.com/cezar-fournier/aumiau-app
-- Downloads: https://github.com/cezar-fournier/aumiau-app/releases
+- Android: Google Play, incluindo testes fechados e atualizações oficiais;
+- iPhone: TestFlight durante o beta e App Store após o lançamento.
 
-Cada release publicada com uma tag `vMAJOR.MINOR.PATCH` gera automaticamente um APK
-e um AAB. O AAB é o pacote destinado à Play Store; o APK é usado para instalação
-direta e homologação.
+O aplicativo não consulta nem oferece downloads por GitHub Releases. No Android
+instalado pela Google Play, a tela de perfil usa a API oficial de atualização da
+loja. No iPhone, TestFlight/App Store gerenciam a instalação de novas versões.
 
-O endereço permanente abaixo sempre entrega o APK da release mais recente e pode ser
-usado em QR Codes e materiais impressos:
-
-`https://github.com/cezar-fournier/aumiau-app/releases/latest/download/aumiau-latest.apk`
-
-O aplicativo consulta as Releases do GitHub ao abrir, informa quando há uma versão
-mais recente e exibe uma notificação local com o link do download. Esse mecanismo é
-um canal temporário de homologação; a distribuição oficial e as atualizações
-gerenciadas serão migradas para a Google Play Store após a liberação do D-U-N-S.
-
-Usuários que quiserem acompanhar o canal também podem abrir o repositório, clicar em
-`Watch` e escolher `Custom > Releases`. Assim, o próprio GitHub envia os avisos de
-novas Releases para a conta do usuário, enquanto o app faz a verificação local ao
-ser aberto.
+O GitHub permanece como repositório do código e arquivo privado de artefatos de CI.
+O workflow manual `build-release.yml` gera APK/AAB somente como artefatos internos,
+sem criar uma Release pública e sem transformar o APK em canal de distribuição.
 
 ## Assinatura Android de produção
 
-O build local continua funcionando com a assinatura de debug. Releases versionadas
-no GitHub exigem a assinatura definitiva, para impedir que uma atualização seja
+O build local continua funcionando com a assinatura de debug. Artefatos Android
+arquivados exigem a assinatura definitiva, para impedir que um pacote seja
 assinada por uma chave diferente da versão instalada.
 
 No repositório GitHub, cadastre estes Secrets em **Settings > Secrets and variables >
@@ -46,18 +34,12 @@ Actions**:
 O arquivo `android/key.properties.example` documenta o formato local. O keystore,
 o arquivo `key.properties` e as senhas nunca devem ser commitados.
 
-## Publicar uma nova versão
+## Gerar arquivo interno Android
 
 1. Atualize `version` em `pubspec.yaml`.
 2. Execute `flutter analyze` e `flutter test`.
-3. Crie e envie uma tag, por exemplo:
-
-```powershell
-git tag v0.2.1
-git push origin v0.2.1
-```
-
-4. O GitHub Actions compila, valida e anexa o APK e o AAB à Release automaticamente.
+3. Execute manualmente o workflow `Archive AuMiau Android artifacts`.
+4. Baixe o APK/AAB na área de artefatos da execução, se uma cópia técnica for necessária.
 
 Antes da primeira release assinada, configure os quatro Secrets de assinatura. O
 pipeline falha de forma intencional se uma tag for publicada sem esses Secrets.
@@ -87,7 +69,7 @@ Cada release gera somente dois artefatos comerciais do aplicativo unificado:
 - Linha do tempo unificada e exportação do histórico em PDF.
 - Backup JSON local com restauração confirmada.
 - Autenticação, sincronização segura e recuperação de senha via API.
-- Verificação de novas versões publicadas no GitHub.
+- Atualizações oficiais pela Google Play no Android.
 
 ## Executar localmente
 

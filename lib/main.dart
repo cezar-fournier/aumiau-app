@@ -813,7 +813,7 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
   bool _loading = true;
   String? _loadError;
   bool _updateNoticeShown = false;
-  UpdateInfo? _availableUpdate;
+  AppUpdateResult? _availableUpdate;
   DateTime? _lastUpdateCheckAt;
   bool _showAuthGate = true;
   bool _showProfileChooser = false;
@@ -896,6 +896,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
   }
 
   Future<void> _checkForUpdates() async {
+    final updateService = const UpdateService();
+    if (!updateService.usesGooglePlayUpdates) return;
     if (_updateNoticeShown) return;
     final now = DateTime.now();
     final lastCheck = _lastUpdateCheckAt;
@@ -904,49 +906,94 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
       return;
     }
     _lastUpdateCheckAt = now;
-    final update = await UpdateService().checkForUpdate();
-    if (!mounted || update == null) return;
+    final update = await updateService.checkForUpdate();
+    if (!mounted || !update.hasUpdate) return;
     _availableUpdate = update;
     _updateNoticeShown = true;
-    await NotificationService.instance.showUpdateAvailable(
-      version: update.version,
-      downloadUrl: update.downloadUrl,
-    );
-    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
-          'Nova versão ${update.version} disponível nas Releases do GitHub.',
-        ),
+        content: const Text('Uma nova versão do AuMiau está disponível.'),
         duration: const Duration(seconds: 8),
         action: SnackBarAction(
           label: 'Atualizar',
-          onPressed: () => _openUpdateDownload(update),
+          onPressed: () => unawaited(_installGooglePlayUpdate(update)),
         ),
       ),
     );
   }
 
-  Future<void> _openUpdateDownload(UpdateInfo update) async {
-    final uri = Uri.tryParse(update.downloadUrl);
-    if (uri == null || uri.scheme != 'https') {
-      _showProductMessage('O link desta atualização é inválido.');
-      return;
-    }
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!opened && mounted) {
-      _showProductMessage('Não foi possível abrir o download da atualização.');
+  Future<void> _installGooglePlayUpdate(AppUpdateResult update) async {
+    _showProductMessage('Baixando a atualização pela Google Play…');
+    final status = await const UpdateService().install(update);
+    if (!mounted || status == AppUpdateStatus.current) return;
+    await _openGooglePlayListing();
+  }
+
+  Future<void> _openGooglePlayListing() async {
+    const packageName = 'com.aumiau.aumiau_app';
+    final marketUri = Uri.parse('market://details?id=$packageName');
+    final webUri = Uri.parse(
+      'https://play.google.com/store/apps/details?id=$packageName',
+    );
+    final opened = await launchUrl(
+      marketUri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (opened) return;
+    final openedInBrowser = await launchUrl(
+      webUri,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!openedInBrowser && mounted) {
+      _showProductMessage('Não foi possível abrir a Google Play.');
     }
   }
 
   Future<void> _showUpdateCenter() async {
     final messenger = ScaffoldMessenger.of(context);
-    final update = _availableUpdate ?? await UpdateService().checkForUpdate();
-    if (!mounted) return;
-    if (update == null) {
+    final updateService = const UpdateService();
+    if (updateService.usesAppleUpdates) {
       messenger.showSnackBar(
         const SnackBar(
-          content: Text('Você já está usando a versão mais recente.'),
+          content: Text(
+            'No iPhone, as atualizações são instaladas pelo TestFlight ou pela App Store.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (!updateService.usesGooglePlayUpdates) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Instale o AuMiau pela Google Play para receber atualizações.',
+          ),
+        ),
+      );
+      return;
+    }
+    final update = _availableUpdate ?? await updateService.checkForUpdate();
+    if (!mounted) return;
+    if (update.status == AppUpdateStatus.current) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Você já está usando a versão mais recente da Google Play.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (!update.hasUpdate) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Não foi possível confirmar a versão pela Google Play agora.',
+          ),
+          action: SnackBarAction(
+            label: 'Abrir Google Play',
+            onPressed: () => unawaited(_openGooglePlayListing()),
+          ),
         ),
       );
       return;
@@ -955,8 +1002,8 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Atualização disponível'),
-        content: Text(
-          'A versão ${update.version} está pronta para download. O Android solicitará sua confirmação antes de instalar.',
+        content: const Text(
+          'A Google Play encontrou uma nova versão do AuMiau. Deseja baixar e instalar agora?',
         ),
         actions: [
           TextButton(
@@ -966,10 +1013,10 @@ class _PersistentHomeShellState extends State<PersistentHomeShell>
           FilledButton.icon(
             onPressed: () {
               Navigator.pop(dialogContext);
-              unawaited(_openUpdateDownload(update));
+              unawaited(_installGooglePlayUpdate(update));
             },
             icon: const Icon(Icons.system_update_alt),
-            label: const Text('Baixar atualização'),
+            label: const Text('Atualizar pela Google Play'),
           ),
         ],
       ),

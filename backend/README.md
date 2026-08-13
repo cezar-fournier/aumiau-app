@@ -147,6 +147,12 @@ GOOGLE_PLAY_PACKAGE_NAME=com.aumiau.aumiau_app
 GOOGLE_PLAY_SERVICE_ACCOUNT_FILE=/run/secrets/google-play-service-account.json
 ```
 
+No host de produção, mantenha o JSON fora do repositório, com permissão `600`,
+por padrão em `/etc/aumiau/google-play-service-account.json`. O Compose monta o
+arquivo somente para leitura em `/run/secrets/google-play-service-account.json`.
+A conta de serviço deve receber apenas as permissões necessárias para consultar
+e gerenciar pedidos e assinaturas do AuMiau no Google Play Console.
+
 O JSON da conta de serviço deve ser montado como arquivo somente leitura, não
 deve entrar na imagem Docker, no Git, em logs ou no aplicativo. A conta precisa
 ter acesso ao app na Play Console e permissão para consultar e gerenciar pedidos

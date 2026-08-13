@@ -68,8 +68,8 @@ android {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             } else {
-                // Permite builds locais até que a assinatura de produção seja
-                // configurada. Tags do GitHub são bloqueadas pelo workflow.
+                // Permite apenas validação local quando a chave oficial não
+                // estiver disponível. Este artefato não pode ser publicado.
                 signingConfig = signingConfigs.getByName("debug")
             }
         }
