@@ -2,6 +2,9 @@ name: Build AuMiau for Google Play
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'stores-v*'
 
 permissions:
   contents: read
