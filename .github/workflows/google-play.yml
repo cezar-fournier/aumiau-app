@@ -5,9 +5,10 @@ on:
   push:
     tags:
       - 'stores-v*'
+      - 'android-artifact-v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-google-play:
@@ -105,6 +106,19 @@ jobs:
           name: aumiau-google-play
           path: build/app/outputs/bundle/release/aumiau-google-play-*.aab
           if-no-files-found: error
+
+      - name: Archive signed AAB in GitHub Releases
+        if: ${{ startsWith(github.ref, 'refs/tags/android-artifact-v') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          aab="$(find build/app/outputs/bundle/release -maxdepth 1 -name 'aumiau-google-play-*.aab' -print -quit)"
+          test -s "$aab"
+          gh release create "$GITHUB_REF_NAME" "$aab" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "AuMiau ${GITHUB_REF_NAME#android-artifact-v}" \
+            --notes "Arquivo técnico assinado para publicação na faixa fechada da Google Play."
 
       - name: Remove signing material
         if: always()
