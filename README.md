@@ -13,9 +13,18 @@ O aplicativo não consulta nem oferece downloads por GitHub Releases. No Android
 instalado pela Google Play, a tela de perfil usa a API oficial de atualização da
 loja. No iPhone, TestFlight/App Store gerenciam a instalação de novas versões.
 
-O GitHub permanece como repositório do código e arquivo privado de artefatos de CI.
-O workflow manual `build-release.yml` gera APK/AAB somente como artefatos internos,
-sem criar uma Release pública e sem transformar o APK em canal de distribuição.
+O GitHub permanece como repositório do código e infraestrutura de CI. Os workflows
+geram APK, AAB e IPA somente como artefatos temporários das execuções, sem criar
+novas Releases públicas e sem transformar o GitHub em canal de distribuição.
+
+O pipeline iOS depende de um runner macOS hospedado pelo GitHub, com Xcode, para
+compilar, assinar e enviar o IPA ao TestFlight. O pipeline Android usa um runner
+Ubuntu para gerar o AAB assinado destinado à Google Play.
+
+Os pipelines de publicação só executam no repositório privado
+`cezar-fournier/aumiau-source`. O repositório público não possui autorização para
+assinar ou publicar versões nas lojas. Tags `stores-v*` devem ser enviadas ao
+remoto Git `source`, nunca somente ao remoto público `origin`.
 
 ## Assinatura Android de produção
 

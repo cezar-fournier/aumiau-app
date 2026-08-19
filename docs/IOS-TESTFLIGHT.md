@@ -4,6 +4,11 @@ O aplicativo iOS usa o Bundle ID `br.com.cainformatica.aumiau`. O workflow
 `.github/workflows/ios-testflight.yml` executa em um runner `macos-26`, valida o
 projeto Flutter e pode compilar, assinar e enviar o IPA ao TestFlight.
 
+O GitHub Actions é apenas a infraestrutura de compilação remota. Ele fornece uma
+máquina macOS temporária com Xcode porque o IPA não pode ser produzido no Windows.
+O canal de instalação e atualização para os testadores continua sendo o TestFlight;
+o GitHub não deve ser divulgado como fonte de download do aplicativo.
+
 ## Execução segura em duas fases
 
 1. Execute manualmente o workflow com `upload_to_testflight=false` para validar
@@ -67,6 +72,22 @@ Set-Clipboard -Value ""
 - valida o IPA antes do upload;
 - remove chave, certificado e perfil ao final;
 - mantém o IPA como artefato privado por apenas sete dias.
+
+O workflow pode ser executado manualmente ou automaticamente por uma tag
+`stores-v*`. Antes de criar a tag, incremente obrigatoriamente o número de build em
+`pubspec.yaml`, confirme os testes locais e verifique se a mesma revisão de código
+está pronta para Google Play e TestFlight.
+
+O envio deve acontecer no repositório privado `cezar-fournier/aumiau-source`, onde
+ficam os segredos Apple. Ao publicar por tag, envie-a ao remoto privado:
+
+```powershell
+git push source stores-v<versão>
+```
+
+Uma tag enviada apenas ao repositório público não publica o aplicativo. Os jobs de
+loja possuem uma proteção explícita que permite sua execução somente no repositório
+privado.
 
 O primeiro build enviado cria a versão beta no App Store Connect. Após o
 processamento da Apple, selecione o build no TestFlight, preencha as informações de
